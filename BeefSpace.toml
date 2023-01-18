@@ -1,0 +1,6 @@
+FileVersion = 1
+Projects = {SigBuddy = {Path = "."}, Beefy2D = "*"}
+Unlocked = ["Beefy2D"]
+
+[Workspace]
+StartupProject = "SigBuddy"

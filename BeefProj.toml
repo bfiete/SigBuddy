@@ -1,0 +1,16 @@
+FileVersion = 1
+Dependencies = {corlib = "*", Beefy2D = "*"}
+
+[Project]
+Name = "SigBuddy"
+TargetType = "BeefGUIApplication"
+StartupObject = "SigBuddy.Program"
+
+[Platform.Windows]
+IconFile = "icon.ico"
+Description = "SigBuddy"
+Company = "BeefyTech"
+
+[Configs.Debug.Win64]
+TargetDirectory = "$(ProjectDir)/dist"
+TargetName = "$(ProjectName)_d"
