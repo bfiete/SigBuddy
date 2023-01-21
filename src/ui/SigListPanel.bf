@@ -1,6 +1,8 @@
+#pragma warning disable 168
 using Beefy.theme.dark;
 using Beefy.events;
 using Beefy.widgets;
+using System;
 
 namespace SigBuddy.ui;
 
@@ -150,7 +152,13 @@ class SigListPanel : Panel
 				listViewItem.Label = "wire";
 
 			var subListViewItem = listViewItem.CreateSubItem(1);
-			subListViewItem.Label = item.mName;
+
+			var label = scope String(64);
+			label.Append(item.mName);
+			if (item.mDims != null)
+				label.Append(item.mDims);
+
+			subListViewItem.Label = label;
 		}
 	}
 

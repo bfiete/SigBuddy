@@ -148,7 +148,7 @@ class SigPanel : DockedWidget
 						hasX = true;
 					else if (bVal == 3)
 						hasZ = true;
-					val += bVal << bit;
+					val += (uint64)bVal << bit;
 				}
 				if (hasX)
 					outStr.Append("XXX");
@@ -187,8 +187,10 @@ class SigPanel : DockedWidget
 
 				int64 curTick = chunk.mStartTick;
 
-				uint8* chunkPtr = chunk.mBuffer.Ptr;
-				uint8* chunkEndPtr = chunkPtr + chunk.mBuffer.Count;
+				var chunkData = chunk.mRawData;
+
+				uint8* chunkPtr = chunkData.mBuffer.Ptr;
+				uint8* chunkEndPtr = chunkPtr + chunkData.mBuffer.Count;
 				while (chunkPtr < chunkEndPtr)
 				{
 					uint32* decodedData = &decodedDataBuf[decodeIdx % 2];
@@ -197,7 +199,7 @@ class SigPanel : DockedWidget
 					// Zero out trailing fill bits in the last signal word 
 					decodedData[signalData.mNumBits/16] = 0;
 
-					signalData.Decode(ref chunkPtr, decodedData, var tickDelta);
+					chunkData.Decode(ref chunkPtr, decodedData, var tickDelta);
 					curTick += tickDelta;
 
 					if (curTick > valueTick)

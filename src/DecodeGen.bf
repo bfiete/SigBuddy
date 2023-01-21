@@ -305,26 +305,19 @@ class DecodeGen
 				int deltaBits = rand.NextI32() % 32;
 				int64 ticksDelta = rand.NextI32() & ((1<<deltaBits) - 1);
 
-				if (numBits == 161)
-				{
-					if (i == 0)
-					{
-						NOP!();
-					}
-				}
-
 				signal.Encode(0, bitsIn);
 				signal.Encode(ticksDelta, bitsIn);
 
 				var chunk = signal.mChunks.Front;
+				var chunkData = chunk.mRawData;
 
-				uint8* ptr = chunk.mBuffer.Ptr;
-				signal.Decode(ref ptr, bitsOut, var outTicksDelta);
+				uint8* ptr = chunkData.mBuffer.Ptr;
+				chunkData.Decode(ref ptr, bitsOut, var outTicksDelta);
 				Runtime.Assert(outTicksDelta == 0);
 				for (int dataIdx < (numBits + 31) / 32)
 					Runtime.Assert(bitsIn[dataIdx] == bitsOut[dataIdx]);
 
-				signal.Decode(ref ptr, bitsOut, out outTicksDelta);
+				chunkData.Decode(ref ptr, bitsOut, out outTicksDelta);
 				for (int dataIdx < (numBits + 31) / 32)
 					Runtime.Assert(bitsIn[dataIdx] == bitsOut[dataIdx]);
 
@@ -332,9 +325,9 @@ class DecodeGen
 
 				while (curOutTick != ticksDelta)
 				{
-					Runtime.Assert(ptr <= &chunk.mBuffer.Back);
+					Runtime.Assert(ptr <= &chunkData.mBuffer.Back);
 
-					signal.Decode(ref ptr, bitsOut, out outTicksDelta);
+					chunkData.Decode(ref ptr, bitsOut, out outTicksDelta);
 					for (int dataIdx < (numBits + 31) / 32)
 						Runtime.Assert(bitsIn[dataIdx] == bitsOut[dataIdx]);
 

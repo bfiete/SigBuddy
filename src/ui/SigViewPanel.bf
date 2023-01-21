@@ -132,6 +132,12 @@ class SigViewPanel : Panel
 
 		int minDrawTick = (.)GetTickAt(0);
 
+		int lodTickTarget = (.)(2.0f / mScale);
+		int lodScale = 0;
+
+		while (1<<(lodScale + 1) <= lodTickTarget)
+			lodScale++;
+		
 		for (var entry in gApp.mSigPanel.mEntries)
 		{
 			//float curX = 0;
@@ -143,6 +149,7 @@ class SigViewPanel : Panel
 				g.FillRect(curX, curY, 50, 18);
 			}*/
 
+			bool drewSigBar = false;
 			float lastDrawEndX = -1000;
 			int64 lastTick = 0;
 			int decodeIdx = 0;
@@ -164,8 +171,12 @@ class SigViewPanel : Panel
 
 			void Draw(float x, float endX, uint32* decodedData)
 			{
+				bool lastWasBar = drewSigBar;
+				drewSigBar = false;
+
 				float drawX = (int32)x;
-				float drawWidth = (int32)endX - (int32)x;
+				//float drawWidth = (int64)endX - (int64)x;
+				float drawWidth = (int64)endX - (int64)x;
 
 				if (drawWidth < 2)
 					drawWidth = 2;
@@ -181,10 +192,11 @@ class SigViewPanel : Panel
 					if (endXDelta >= 0.0f)
 					{
 						using (g.PushColor(entry.mColor))
-							g.Draw(gApp.mSigBar, lastDrawEndX + 3, curY);
+							g.Draw(gApp.mSigBar, lastDrawEndX, curY);
 
 						lastDrawEndX += 3;
 						minNextTick = (.)GetTickAt(lastDrawEndX);
+						drewSigBar = true;
 
 						return;
 					}
@@ -194,8 +206,19 @@ class SigViewPanel : Panel
 					}
 				}
 
-				lastDrawEndX = drawEndX;
+				if (drawX < -100000)
+				{
+					drawX = -100000;
+					drawWidth = (int64)endX - (int64)drawX;
+				}
+				if (drawWidth > 200000)
+					drawWidth = 200000;
 
+
+				var origLastDrawEndX = lastDrawEndX;
+				lastDrawEndX = drawEndX;
+				
+				
 				/*if (drawX - lastDrawX < 2.5)
 					return;
 				lastDrawX = drawX;*/
@@ -232,14 +255,31 @@ class SigViewPanel : Panel
 
 				using (g.PushColor(color))
 				{
+					
+
 					if (isNonZero)
 					{
-						if (drawWidth < 4.5f)
+						if ((drawWidth < 4.5f) /*&& (!mWidgetWindow.IsKeyDown(.Shift))*/)
 						{
 							g.Draw(gApp.mSigBar, drawX, curY);
+							drewSigBar = true;
+							//lastDrawEndX = drawX + Math.Max(drawWidth, 3);
+							lastDrawEndX = drawX + 3;
 						}
 						else
 						{
+							if (lastWasBar)
+							{
+								drawX = origLastDrawEndX;
+								drawWidth = (int64)endX - (int64)drawX;
+
+								//int ofs = (.)(lastDrawEndX - drawX - 1);
+								//drawX -= ofs;
+								//drawWidth += ofs;
+
+								//drawX -= 1;
+							}
+
 							SigUIImage imageKind = useAngled ? .SigFullAngled : .SigFull;
 							if ((useAngled) && (drawWidth < 7))
 								imageKind = .SigFullAngledShort;
@@ -249,6 +289,18 @@ class SigViewPanel : Panel
 					}
 					else
 					{
+						if (lastWasBar)
+						{
+							drawX = origLastDrawEndX;
+							drawWidth = (int64)endX - (int64)drawX;
+
+							//int ofs = (.)(lastDrawEndX - drawX - 1);
+							//drawX -= ofs;
+							//drawWidth += ofs;
+
+							//drawX -= 1;
+						}
+
 						//g.FillRect(x, curY, width, 18);
 						g.DrawButton(gApp.mSigUIImages[useAngled ? (.)SigUIImage.SigEmptyAngled :
 							(.)SigUIImage.SigEmpty], drawX, curY, drawWidth);
@@ -279,8 +331,51 @@ class SigViewPanel : Panel
 
 				int64 curTick = chunk.mStartTick;
 
-				uint8* chunkPtr = chunk.mBuffer.Ptr;
-				uint8* chunkEndPtr = chunkPtr + chunk.mBuffer.Count;
+				var chunkData = chunk.mRawData;
+				int lodIdx = -1;
+
+				if (mWidgetWindow.IsKeyDown((.)'0'))
+					lodIdx = -1;
+				else if (mWidgetWindow.IsKeyDown((.)'1'))
+					lodIdx = 0;
+				else if (mWidgetWindow.IsKeyDown((.)'2'))
+					lodIdx = 1;
+				else if (mWidgetWindow.IsKeyDown((.)'3'))
+					lodIdx = 2;
+				else
+				{
+					while (lodScale >= chunk.mLODIndices.Count)
+						chunk.GenerateNextLOD();
+					lodIdx = chunk.mLODIndices[lodScale];
+				}
+
+				if (lodIdx != -1)
+				{
+					while (lodIdx >= chunk.mLODData.Count)
+						chunk.GenerateNextLOD();
+
+					chunkData = chunk.mLODData[lodIdx];
+
+					/*if (!chunk.mLODData.IsEmpty)
+					{
+						chunkData = chunk.mLODData[0];
+					}*/
+					/*else
+						continue;*/
+				}
+
+				/*if (lodIdx == -1)
+					entry.mColor = 0xFF00FF00;
+				else if (lodIdx == 0)
+					entry.mColor = 0xFFFF0000;
+				else if (lodIdx == 1)
+					entry.mColor = 0xFF0000FF;
+				else
+					entry.mColor = 0xFFFFFF00;*/
+
+				int32 chunkDecodeIdx = 0;
+				uint8* chunkPtr = chunkData.mBuffer.Ptr;
+				uint8* chunkEndPtr = chunkPtr + chunkData.mBuffer.Count;
 				while (chunkPtr < chunkEndPtr)
 				{
 					uint32* decodedData = &decodedDataBuf[decodeIdx % 2];
@@ -289,7 +384,13 @@ class SigViewPanel : Panel
 					// Zero out trailing fill bits in the last signal word 
 					decodedData[signalData.mNumBits/16] = 0;
 
-					signalData.Decode(ref chunkPtr, decodedData, var tickDelta);
+					chunkData.Decode(ref chunkPtr, decodedData, var tickDelta);
+					if (chunkDecodeIdx > 0)
+					{
+						tickDelta >>= chunkData.mDeltaShift;
+						tickDelta += chunkData.mDeltaEncodeOffset;
+					}
+
 					curTick += tickDelta;
 
 					if (curTick >= minNextTick)
@@ -298,11 +399,12 @@ class SigViewPanel : Panel
 
 						if (decodeIdx != 0)
 							Draw(prevSigX, sigX, prevDecodedData);
-
+						
 						prevSigX = sigX;
 					}
 					
 					decodeIdx++;
+					chunkDecodeIdx++;
 
 					if (prevSigX > mWidth)
 						break ChunkLoop;
