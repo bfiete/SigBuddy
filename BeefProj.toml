@@ -14,3 +14,6 @@ Company = "BeefyTech"
 [Configs.Debug.Win64]
 TargetDirectory = "$(ProjectDir)/dist"
 TargetName = "$(ProjectName)_d"
+
+[Configs.Release.Win64]
+TargetDirectory = "$(ProjectDir)/dist"
