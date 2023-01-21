@@ -68,7 +68,7 @@ class SigListPanel : Panel
 			var entry = new SigPanel.Entry();
 			entry.mSignal = sigListViewItem.mSignal;
 			gApp.mSigPanel.mEntries.Add(entry);
-			gApp.mSigPanel.mSigActiveListPanel.RebuildData();
+			gApp.mSigPanel.mSigActiveListPanel.RebuildListView();
 		}
 
 		if (btnNum == 1)
@@ -152,5 +152,10 @@ class SigListPanel : Panel
 			var subListViewItem = listViewItem.CreateSubItem(1);
 			subListViewItem.Label = item.mName;
 		}
+	}
+
+	public void Clear()
+	{
+		mListView.GetRoot().Clear();
 	}
 }

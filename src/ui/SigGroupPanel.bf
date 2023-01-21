@@ -162,6 +162,17 @@ class SigGroupPanel : Panel
 			}
 		}
 
-		HandleGroup(mListView.GetRoot() as SigGroupListViewItem, gApp.mSigData.mRoot);
+		if (gApp.mSigData.mRoot.mNestedGroups != null)
+		{
+			for (var subGroup in gApp.mSigData.mRoot.mNestedGroups)
+			{
+				HandleGroup(mListView.GetRoot() as SigGroupListViewItem, subGroup);
+			}
+		}
+	}
+
+	public void Clear()
+	{
+		mListView.GetRoot().Clear();
 	}
 }

@@ -6,6 +6,9 @@ using Beefy.gfx;
 using Beefy.widgets;
 using Beefy.sys;
 using SigBuddy.ui;
+using System.Diagnostics;
+using Beefy.utils;
+using System.IO;
 
 namespace SigBuddy;
 
@@ -37,6 +40,9 @@ class SBApp : BFApp
 	public SigListPanel mSigListPanel;
 	public SigData mSigData ~ delete _;
 
+	public String mSignalFilePath ~ delete _;
+	public String mWorkspaceFilePath ~ delete _;
+
 	public this()
 	{
 		gApp = this;
@@ -57,6 +63,7 @@ class SBApp : BFApp
 
 		base.Init();
 
+		
 		
 		DarkTheme darkTheme = new DarkTheme();
 		darkTheme.Init();
@@ -98,11 +105,39 @@ class SBApp : BFApp
 		CreateMenu();
 
 		mSigData = new .();
-		//mSigData.Load(@"C:\proj\ClockBuddy\fpga\Verilated\vdump.vcd");
-		mSigData.Load(@"C:\proj\ClockBuddy\fpga\Verilated\test.vcd");
-		//mSigData.Load(@"C:\proj\ClockBuddy\fpga\dump.vcd");
+		//Load(@"C:\proj\ClockBuddy\fpga\Verilated\vdump.vcd");
 
-		mSigGroupPanel.RebuildData();
+		//for (int i < 10)
+			Load(@"C:\proj\ClockBuddy\fpga\Verilated\vdump.sigw");
+
+		//Load(@"C:\proj\ClockBuddy\fpga\Verilated\test.vcd");
+		//Load(@"C:\proj\ClockBuddy\fpga\Verilated\test.sigw");
+
+		//Load(@"C:\proj\ClockBuddy\fpga\dump.vcd");
+		//Load(@"C:\proj\ClockBuddy\fpga\dump.sigw");
+
+		//Load(scope $"{mInstallDir}test.sigw");
+	}
+
+	void UpdateTitle(StringView titleOverride = default)
+	{
+		String title = scope String();
+		title.Append("SigBuddy");
+
+		var fileName = scope String();
+
+		if (mWorkspaceFilePath != null)
+			Path.GetFileName(mWorkspaceFilePath, fileName);
+		else if (mSignalFilePath != null)
+			Path.GetFileName(mSignalFilePath, fileName);
+
+		if (!fileName.IsEmpty)
+		{
+			title.Append(" - ");
+			title.Append(fileName);
+		}
+
+		mMainWindow.SetTitle(title);
 	}
 
 	public void WithDocumentTabbedViewsOf(BFWindow window, delegate void(DarkTabbedView) func)
@@ -218,14 +253,291 @@ class SBApp : BFApp
 		mDockingFrame.RehupSize();
 	}
 
+	public enum MessageBeepType
+	{
+	    Default = -1,
+	    Ok = 0x00000000,
+	    Error = 0x00000010,
+	    Question = 0x00000020,
+	    Warning = 0x00000030,
+	    Information = 0x00000040,
+	}
+
+	public static void Beep(MessageBeepType type)
+	{
+#if BF_PLATFORM_WINDOWS && !CLI
+		MessageBeep(type);
+#endif        	
+	}
+
+#if BF_PLATFORM_WINDOWS
+	[Import("user32.lib"), CLink, CallingConvention(.Stdcall)]
+	public static extern bool MessageBeep(MessageBeepType type);
+#endif
+
+	void Fail(String error)
+	{
+		Beep(MessageBeepType.Error);
+
+		Dialog dialog = ThemeFactory.mDefault.CreateDialog("ERROR", error, DarkTheme.sDarkTheme.mIconError);
+		dialog.mDefaultButton = dialog.AddButton("OK");
+		dialog.mEscButton = dialog.mDefaultButton;
+		dialog.mWindowFlags |= .Modal;
+		//dialog.PopupWindow(parentWindow ?? GetCurrentWindow());
+		dialog.PopupWindow(mMainWindow);
+	}
+
+	bool SaveWorkspaceAs()
+	{
+		SaveFileDialog dialog = scope .();
+		dialog.SetFilter("Workspace (*.sigw)|*.sigw");
+		//dialog.ValidateNames = true;
+		//if (!fullDir.IsEmpty)
+			//dialog.InitialDirectory = fullDir;
+
+		/*if (sourceViewPanel.mFilePath != null)
+		{
+			String ext = scope .();
+			Path.GetExtension(sourceViewPanel.mFilePath, ext);
+			dialog.DefaultExt = ext;
+
+			String fileName = scope .();
+			Path.GetFileName(sourceViewPanel.mFilePath, fileName);
+			dialog.FileName = fileName;
+		}*/
+
+		if (mSignalFilePath != null)
+		{
+			var dirPath = Path.GetDirectoryPath(mSignalFilePath, .. scope .());
+			dialog.InitialDirectory = dirPath;
+		}
+
+		dialog.DefaultExt = ".sigw";
+
+		if (mWorkspaceFilePath != null)
+			dialog.FileName = mWorkspaceFilePath;
+		else if (mSignalFilePath != null)
+		{
+			String fileName = scope .();
+			Path.GetFileNameWithoutExtension(mSignalFilePath, fileName);
+			fileName.Append(".sigw");
+			dialog.FileName = fileName;
+		}
+
+		//dialog.SetFilter("Beef projects (BeefProj.toml)|BeefProj.toml");
+
+		dialog.OverwritePrompt = true;
+		if (dialog.ShowDialog(mMainWindow).GetValueOrDefault() != .OK)
+			return false;
+
+		DeleteAndNullify!(mWorkspaceFilePath);
+		mWorkspaceFilePath = new .(dialog.FileNames[0]);
+		SaveWorkspace();
+
+		return true;
+	}
+
 	void CreateMenu()
 	{
 		SysMenu root = mMainWindow.mSysMenu;
 
-		var subItem = root.AddMenuItem("&File");
-		subItem.AddMenuItem("&Open...", "Ctrl+O");
+		var fileMenu = root.AddMenuItem("&File");
+		fileMenu.AddMenuItem("&Open...", "Ctrl+O");
 
-		subItem = root.AddMenuItem("&Edit");
+		var subItem = fileMenu.AddMenuItem("&Save Workspace", "Ctrl+S");
+		subItem.mOnMenuItemSelected.Add(new (menu) =>
+			{
+				SaveWorkspace();
+			});
+
+		subItem = fileMenu.AddMenuItem("Close Workspace");
+		subItem.mOnMenuItemSelected.Add(new (menu) =>
+			{
+				CloseWorkspace();
+			});
+
+		fileMenu = root.AddMenuItem("&Edit");
+	}
+
+	void LoadSignal(StringView path)
+	{
+		DeleteAndNullify!(mSignalFilePath);
+
+		Stopwatch sw = scope .();
+		sw.Start();
+
+		//var pfi = Profiler.StartSampling().GetValueOrDefault();
+
+		if (mSigData.Load(path) case .Err)
+		{
+			Fail(scope $"Failed to load '{path}'");
+			return;
+		}
+
+		//pfi.Dispose();
+
+		sw.Stop();
+		Debug.WriteLine($"Loading time: {sw.ElapsedMilliseconds}ms");
+
+		mSignalFilePath = new .(path);
+		mSigPanel.Rebuild();
+		mSigGroupPanel.RebuildData();
+
+		UpdateTitle();
+	}
+
+	void Load(StringView path)
+	{
+		Debug.WriteLine($"Loading {path}...");
+
+		if (path.EndsWith(".sigw", .OrdinalIgnoreCase))
+		{
+			DeleteAndNullify!(mWorkspaceFilePath);
+			if (LoadWorkspace(path) case .Err)
+				Fail(scope $"Failed to load workspace '{path}'");
+			return;
+		}
+
+		LoadSignal(path);
+	}
+
+	void CloseWorkspace()
+	{
+		mSigPanel.mEntries.ClearAndDeleteItems();
+		mSigPanel.mSigActiveListPanel.RebuildListView();
+
+		DeleteAndNullify!(mSignalFilePath);
+		DeleteAndNullify!(mWorkspaceFilePath);
+
+		mSigGroupPanel.Clear();
+		mSigListPanel.Clear();
+
+		delete mSigData;
+		mSigData = new SigData();
+
+		UpdateTitle();
+	}
+
+	Result<void> LoadWorkspace(StringView path)
+	{
+		CloseWorkspace();
+
+		StructuredData sd = scope .();
+		if (sd.Load(path) case .Err(let err))
+		{
+			return .Err;
+		}
+
+		mWorkspaceFilePath = new .(path);
+
+		var sigFile = sd.GetString("SignalFile", .. scope .());
+		if (!sigFile.IsEmpty)
+		{
+			var workspaceDir = Path.GetDirectoryPath(path, .. scope .());
+			var signalFilePath = Path.GetAbsolutePath(sigFile, workspaceDir, .. scope .());
+			LoadSignal(signalFilePath);
+		}
+
+		var sigViewPanel = mSigPanel.mSigViewPanel;
+
+		float tickOfs = 0;
+		sd.Get("TickOfs", ref tickOfs);
+		sigViewPanel.mTickOfs = tickOfs;
+
+		float scale = 1.0f;
+		sd.Get("Scale", ref scale);
+		sigViewPanel.mScale = scale;
+
+		sigViewPanel.Clamp();
+
+		for (var entry in sd.Enumerate("Entries"))
+		{
+			SigPanel.Entry entry = null;
+
+			var signalName = sd.GetString("Name", .. scope .());
+			if (!String.IsNullOrEmpty(signalName))
+			{
+				var signal = mSigData.GetSignal(signalName);
+				if (signal != null)
+				{
+					entry = new SigPanel.Entry();
+					entry.mSignal = signal;
+					mSigPanel.mEntries.Add(entry);
+				}	
+			}
+
+			if (entry != null)
+			{
+				uint32 color = (.)sd.GetInt("Color");
+				if (color != 0)
+					entry.mColor = color;
+
+				entry.mDataFormat = sd.GetEnum<SigPanel.DataFormat>("Format");
+			}
+		}
+
+		mSigPanel.Rebuild();
+		mSigPanel.mSigActiveListPanel.RebuildListView();
+
+		UpdateTitle();
+
+		return .Ok;
+	}
+
+	Result<void> SaveWorkspace(StringView path)
+	{
+		StructuredData sd = scope .();
+
+		sd.CreateNew();
+
+		//using (sd.CreateObject())
+		{
+			if (mSignalFilePath != null)
+			{
+				var workspaceDir = Path.GetDirectoryPath(path, .. scope .());
+				var sigRelPath = Path.GetRelativePath(mSignalFilePath, workspaceDir, .. scope .());
+				sd.Add("SignalFile", sigRelPath);
+			}
+
+			var sigViewPanel = mSigPanel.mSigViewPanel;
+			sd.Add("TickOfs", sigViewPanel.mTickOfs);
+			if (sigViewPanel.mCursorTick != null)
+				sd.Add("CursorTick", sigViewPanel.mCursorTick.Value);
+			sd.Add("Scale", sigViewPanel.mScale);
+
+			using (sd.CreateArray("Entries"))
+			{
+				for (var entry in mSigPanel.mEntries)
+				{
+					using (sd.CreateObject())
+					{
+						var signalName = entry.mSignal.GetFullName(.. scope .());
+						sd.Add("Name", signalName);
+						sd.ConditionalAdd("Format", entry.mDataFormat);
+						sd.ConditionalAdd("Color", entry.mColor, 0xFF00FF00);
+					}
+				}
+			}
+		}
+
+		String tomlString = scope String();
+		sd.ToTOML(tomlString);
+		if (File.WriteAllText(path, tomlString) case .Err)
+			return .Err;
+
+		return .Ok;
+	}
+
+	void SaveWorkspace()
+	{
+		if (mWorkspaceFilePath == null)
+		{
+			SaveWorkspaceAs();
+			return;
+		}
+
+		if (SaveWorkspace(mWorkspaceFilePath) case .Err)
+			Fail(scope $"Failed to write workspace '{mWorkspaceFilePath}'");
 	}
 }
 

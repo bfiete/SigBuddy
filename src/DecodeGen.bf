@@ -290,7 +290,7 @@ class DecodeGen
 				uint32* bitsIn = scope uint32[100]* ( ? );
 				uint32* bitsOut = scope uint32[100]* ( ? );
 
-				SignalData signal = new .();
+				SignalData signal = new .(numBits);
 				signal.mNumBits = numBits;
 
 				for (int dataIdx < (numBits + 31) / 32)
@@ -347,5 +347,76 @@ class DecodeGen
 			}
 		}
 
+	}
+
+	public static void TableGen()
+	{
+		for (int i < 256)
+		{
+			int xCount = 0;
+			int zCount = 0;
+			int val = 0;
+
+			for (int bitNum < 4)
+			{
+				int bitVal = (i >> (bitNum*2)) & 3;
+				if (bitVal == 1)
+					val |= 1<<bitNum;
+				else if (bitVal == 2)
+					xCount++;
+				else if (bitVal == 3)
+					zCount++;
+			}
+
+			if (i % 32 == 0)
+				Debug.WriteLine();
+
+			if (xCount == 4)
+				Debug.Write("'x'");
+			else if (xCount > 0)
+				Debug.Write("'X'");
+			else if (zCount == 4)
+				Debug.Write("'z'");
+			else if (zCount > 0)
+				Debug.Write("'Z'");
+			else if (val < 10)
+				Debug.Write($"'{'0' + val}'");
+			else
+				Debug.Write($"'{'A' + (val - 10)}'");
+			Debug.Write(", ");
+		}
+
+		for (int i < 64)
+		{
+			int xCount = 0;
+			int zCount = 0;
+			int val = 0;
+
+			for (int bitNum < 3)
+			{
+				int bitVal = (i >> (bitNum*2)) & 3;
+				if (bitVal == 1)
+					val |= 1<<bitNum;
+				else if (bitVal == 2)
+					xCount++;
+				else if (bitVal == 3)
+					zCount++;
+			}
+
+			if (i % 32 == 0)
+				Debug.WriteLine();
+
+			if (xCount == 3)
+				Debug.Write("'x'");
+			else if (xCount > 0)
+				Debug.Write("'X'");
+			else if (zCount == 3)
+				Debug.Write("'z'");
+			else if (zCount > 0)
+				Debug.Write("'Z'");
+			else if (val < 10)
+				Debug.Write($"'{'0' + val}'");
+			Debug.Write(", ");
+		}
 	}
 }

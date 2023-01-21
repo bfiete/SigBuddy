@@ -31,7 +31,9 @@ enum SigCmd
 
 public class SignalChunk
 {
-	public List<uint8> mBuffer = new .() ~ delete _;
+	public const int cDataSize = 32*1024;
+
+	public List<uint8> mBuffer = new .(cDataSize ) ~ delete _;
 
 	public int64 mStartTick = -1;
 	public int64 mEndTick = -1;
@@ -41,22 +43,36 @@ public class SignalData : RefCounted
 {
 	public List<SignalChunk> mChunks = new .() ~ DeleteContainerAndItems!(_);
 	public int32 mNumBits;
+	public int32 mMaxEncodeSize;
 
-	public this()
+	public this(int32 numBits)
 	{
+		mNumBits = numBits;
+		mMaxEncodeSize = mNumBits / 8 + 6;
+
 		SignalChunk chunk = new .();
 		mChunks.Add(chunk);
 	}
 
 	public void Encode(int64 tick, uint32* data)
 	{
-		var chunk = mChunks.Front;
+		var chunk = mChunks.Back;
 		int32 numBits = mNumBits;
 
 		if (chunk.mStartTick == -1)
 		{
 			chunk.mStartTick = tick;
 			chunk.mEndTick = tick;
+		}
+		else
+		{
+			if (chunk.mBuffer.[Friend]mSize >= SignalChunk.cDataSize - mMaxEncodeSize)
+			{
+				chunk = new .();
+				chunk.mStartTick = tick;
+				chunk.mEndTick = tick;
+				mChunks.Add(chunk);
+			}
 		}
 
 		int64 tickDelta = tick - chunk.mEndTick;
@@ -113,10 +129,12 @@ public class SignalData : RefCounted
 					return;
 				}
 				uint8* ptr = chunk.mBuffer.GrowUnitialized(4);
-				ptr[0] = 2 | (uint8)((tickDelta >> 0) << 2);
+				/*ptr[0] = 2 | (uint8)((tickDelta >> 0) << 2);
 				ptr[1] = (uint8)((tickDelta >> 6) << 0);
 				ptr[2] = (uint8)((tickDelta >> 14) << 0);
-				ptr[3] = (uint8)((tickDelta >> 22) << 0) | (uint8)((data[0] >> 0) << 6);
+				ptr[3] = (uint8)((tickDelta >> 22) << 0) | (uint8)((data[0] >> 0) << 6);*/
+
+				*(uint32*)ptr = 2 | ((uint32)tickDelta << 2) | (data[0] << 30);
 			}
 		case 2:
 			if (tickDelta < 1 << 10)
@@ -1041,6 +1059,11 @@ public class SignalData : RefCounted
 			}
 		}
 	}
+
+	public void Finish()
+	{
+		mChunks.Back.mEndTick = gApp.mSigData.mEndTick;
+	}
 }
 
 public enum SignalKind
@@ -1052,6 +1075,7 @@ public enum SignalKind
 
 public class Signal
 {
+	public SignalGroup mGroup;
 	public SignalKind mKind;
 	public String mName ~ delete _;
 	public String mDims ~ delete _;
@@ -1063,13 +1087,64 @@ public class Signal
 	{
 		mSignalData.ReleaseRef();
 	}
+
+	public void GetFullName(String outName)
+	{
+		mGroup.GetFullName(outName);
+		outName.Append('/');
+		outName.Append(mName);
+	}
+
+	public void Finish()
+	{
+		mSignalData.Finish();
+	}
 }
 
 public class SignalGroup
 {
+	public SignalGroup mGroup;
 	public String mName = new .() ~ delete _;
 	public List<SignalGroup> mNestedGroups ~ DeleteContainerAndItems!(_);
 	public List<Signal> mSignals = new .() ~ DeleteContainerAndItems!(_);
+	public Dictionary<String, SignalGroup> mGroupMap ~ delete _;
+	public Dictionary<String, Signal> mSignalMap = new .() ~ delete _;
+
+	public void GetFullName(String outName)
+	{
+		if ((mGroup != null) && (mGroup.mGroup != null))
+		{
+			mGroup.GetFullName(outName);
+			outName.Append('/');
+		}
+		outName.Append(mName);
+	}
+
+	public SignalGroup GetGroup(StringView name)
+	{
+		if (mGroupMap.TryGetValueAlt(name, var value))
+			return value;
+		return null;
+	}
+
+	public Signal GetSignal(StringView name)
+	{
+		if (mSignalMap.TryGetValueAlt(name, var value))
+			return value;
+		return null;
+	}
+
+	public void Finish()
+	{
+		if (mNestedGroups != null)
+		{
+			for (var subGroup in mNestedGroups)
+				subGroup.Finish();
+		}
+
+		for (var signal in mSignals)
+			signal.Finish();
+	}
 }
 
 class SigData
@@ -1090,22 +1165,30 @@ class SigData
 		case Comment;
 		case Scope(int32 dataIdx);
 		case Var(int32 dataIdx);
-		case Signal;
+		case Timescale;
 	}
 
 
 	public SignalGroup mRoot ~ delete _;
 	public int64 mStartTick;
 	public int64 mEndTick;
+	public double mTimescale = 1e-9; // 1ns
+
+	public int64 TickCount => mEndTick - mStartTick;
 
 	public Result<void> Load(StringView filePath)
 	{
-		FileStream fs = scope .();
+		UnbufferedFileStream fs = scope .();
 		if (fs.Open(filePath, .Read) case .Err)
 			return .Err;
 
+		mRoot = new .();
+
 		int32 chunkSize = 1024 * 1024;
+
 		char8* data = new char8[chunkSize + 8 * 2]*;
+		defer delete data;
+
 		// Terminate chunk with sequence that will reduce paring special cases
 		for (int i < 8)
 		{
@@ -1123,11 +1206,18 @@ class SigData
 		}
 
 		List<SignalGroup> signalGroupStack = scope .();
+		signalGroupStack.Add(mRoot);
+
+		//int64 totalLen = fs.Length;
+
+		String timescaleStr = scope .();
 
 		uint32[4096] tempBuf = ?;
 		int32 parseIdx = 0;
 		int totalReadLen = 0;
 
+		int64 tick = 0;
+		bool isFirstTick = true;
 		int32 carryoverSize = 0;
 		while (true)
 		{
@@ -1140,32 +1230,39 @@ class SigData
 			}
 			totalReadLen += readLen;
 
-			bool atEnd = false;
 			int32 dataLen = (.)readLen + carryoverSize;
-			if (dataLen == chunkSize)
+			bool atEnd = false;
+
+			void FindEnd()
 			{
-				// Zero terminate on the last line ending
-				char8* checkPtr = data + dataLen - 1;
-				while (checkPtr > data)
+				if (dataLen == chunkSize)
 				{
-					if (*checkPtr == '\n')
-						break;
-					checkPtr--;
+					// Zero terminate on the last line ending
+					char8* checkPtr = data + dataLen - 1;
+					while (checkPtr > data)
+					{
+						if (*checkPtr == '\n')
+							break;
+						checkPtr--;
+					}
+
+					*(checkPtr) = 0;
 				}
-
-				*(checkPtr) = 0;
-			}
-			else
-			{
-				Debug.Assert(dataLen < chunkSize);
-				atEnd = true;
-				// Force a \n at the end just to ensure the 'null' terminator occurs at a line start
-				data[dataLen] = '\n';
-				data[dataLen + 1] = 0;
+				else
+				{
+					Debug.Assert(dataLen < chunkSize);
+					atEnd = true;
+					// Force a \n at the end just to ensure the 'null' terminator occurs at a line start
+					data[dataLen] = '\n';
+					data[dataLen + 1] = 0;
+				}
 			}
 
-			int64 tick = 0;
+			FindEnd();
+
 			char8* curPtr = data;
+
+			//Debug.WriteLine($"Processing:\n{StringView(curPtr)}\n");
 
 			StringView NextString()
 			{
@@ -1222,83 +1319,65 @@ class SigData
 							curPtr++;
 						}
 
-						if (tick == 0)
+						if (isFirstTick)
+						{
 							mStartTick = newTick;
+							isFirstTick = false;
+						}
+						Debug.Assert(newTick >= tick);
 						tick = newTick;
 						mEndTick = tick;
 
 						continue;
 					}
 
-					bool hasData = false;
+					bool hasDataBits = false;
+					bool needsDataBits = false;
+					char8* startValPtr = null;
+
 					if (c == 'b')
 					{
-						uint32* bufPtr = &tempBuf;
-						*bufPtr = 0;
-						int32 bitNum = 0;
-
 						curPtr++;
 
+						startValPtr = curPtr;
 						while (true)
 						{
 							c = *curPtr;
 							if (c <= ' ')
 								break;
-							*bufPtr *= 4;
-							if (c == '1')
-								*bufPtr += 1;
-							else if (c == 'x')
-								*bufPtr += 2;
-							else if (c == 'z')
-								*bufPtr += 3;
 							curPtr++;
-
-							if (++bitNum == 16)
-							{
-								bufPtr++;
-								if (bufPtr - &tempBuf >= tempBuf.Count)
-								{
-									// Too large
-									break;
-								}
-								*bufPtr = 0;
-								bitNum = 0;
-							}
 						}
-
-						/*int32 byteLen = (.)(bufPtr - &tempBuf);
-						if (bitNum > 0)
-							byteLen++;*/
-
-						hasData = true;
+						needsDataBits = true;
 					}
 					else if (c == '0')
 					{
 						tempBuf[0] = 0;
-						hasData = true;
+						hasDataBits = true;
 						curPtr++;
 					}
 					else if (c == '1')
 					{
 						tempBuf[0] = 1;
-						hasData = true;
+						hasDataBits = true;
 						curPtr++;
 					}
 					else if (c == 'x')
 					{
 						tempBuf[0] = 2;
-						hasData = true;
+						hasDataBits = true;
 						curPtr++;
 					}
 					else if (c == 'z')
 					{
 						tempBuf[0] = 3;
-						hasData = true;
+						hasDataBits = true;
 						curPtr++;
 					}
 
-					if (hasData)
+					if ((hasDataBits) || (needsDataBits))
 					{
+						char8* scanPtr = curPtr - 1;
+
 						int32 dataId = 0;
 						while (*curPtr <= ' ')
 							curPtr++;
@@ -1308,9 +1387,11 @@ class SigData
 							c = *curPtr;
 							if (c <= ' ')
 								break;
+
 							curPtr++;
-							dataId *= 256;
-							dataId += (uint8)c;
+							// Id range is from \x33 to \x126
+							dataId *= 95;
+							dataId += (uint8)c - 32;
 						}
 
 						if ((dataId >= 0) && (dataId < signalDataMap.[Friend]mSize))
@@ -1318,8 +1399,82 @@ class SigData
 							var signalData = signalDataMap[dataId];
 							if (signalData != null)
 							{
+								int numSignalBits = signalData.mNumBits;
+
+								if (isFirstTick)
+								{
+									mStartTick = tick;
+									isFirstTick = false;
+								}
+
+								if (needsDataBits)
+								{
+									if (numSignalBits <= 16)
+									{
+										tempBuf[0] = 0;
+
+										if (numSignalBits == scanPtr - startValPtr + 1)
+										{
+											for (int bitNum < numSignalBits)
+											{
+												c = *(scanPtr--);
+												uint32 bitVal = ((uint32)c & 1) | (((uint32)c >> 1) & 1) | (((uint32)c >> 2) & 2);
+												tempBuf[0] |= bitVal << (bitNum * 2);
+											}
+										}
+										else
+										{
+											uint32 bitVal = 0;
+											for (int bitNum < numSignalBits)
+											{
+												if (scanPtr >= startValPtr)
+												{
+													c = *(scanPtr--);
+													bitVal = ((uint32)c & 1) | (((uint32)c >> 1) & 1) | (((uint32)c >> 2) & 2);
+												}
+												else if (bitVal == 1)
+													bitVal = 0;
+												tempBuf[0] |= bitVal << (bitNum  * 2);
+											}
+										}
+									}
+									else
+									{
+										for (int i < (numSignalBits + 15)/16)
+											tempBuf[i] = 0;
+
+										uint32 bitVal = 0;
+										for (int bitNum < numSignalBits)
+										{
+											if (scanPtr >= startValPtr)
+											{
+												c = *(scanPtr--);
+												/*if (c == '1')
+													bitVal = 1;
+												else if (c == 'x')
+													bitVal = 2;
+												else if (c == 'z')
+													bitVal = 3;
+												else
+													bitVal = 0;*/
+
+												// Bitwise version of the above
+												bitVal = ((uint32)c & 1) | (((uint32)c >> 1) & 1) | (((uint32)c >> 2) & 2);
+											}
+											else if (bitVal == 1)
+												bitVal = 0;
+
+											tempBuf[bitNum / 16] |= bitVal << ((bitNum % 16) * 2);
+										}
+									}
+								}
+
 								signalData.Encode(tick, &tempBuf);
 							}
+						}
+						else
+						{
+							Debug.FatalError("Invalid id");
 						}
 
 						continue;
@@ -1339,25 +1494,31 @@ class SigData
 						parseState = .Var(0);
 					case "$scope":
 						var signalGroup = new SignalGroup();
-
-						if (signalGroupStack.IsEmpty)
+						
+						var curGroup = signalGroupStack.Back;
+						if (curGroup.mNestedGroups == null)
 						{
-							if (mRoot == null)
-								mRoot = signalGroup;
+							curGroup.mNestedGroups = new .();
+							curGroup.mGroupMap = new .();
 						}
-						else
-						{
-							var curGroup = signalGroupStack.Back;
-							if (curGroup.mNestedGroups == null)
-								curGroup.mNestedGroups = new .();
-							curGroup.mNestedGroups.Add(signalGroup);
-						}
+						curGroup.mNestedGroups.Add(signalGroup);
+						signalGroup.mGroup = curGroup;
+						
 						signalGroupStack.Add(signalGroup);
 						parseState = .Scope(0);
 					case "$upscope":
 						if (!signalGroupStack.IsEmpty)
 							signalGroupStack.PopBack();
+					case "$timescale":
+						timescaleStr.Clear();
+						parseState = .Timescale;
 					case "$enddefinitions":
+					case "$dumpvars":
+						// Don't do anything
+					case "$dumpall":
+						// Don't do anything
+					case "$end":
+						// Don't do anything
 					default:
 						if (s.StartsWith('$'))
 							parseState = .Unknown;
@@ -1380,6 +1541,10 @@ class SigData
 					var str = NextString();
 					if (str == "$end")
 					{
+						var signalGroup = signalGroupStack.Back;
+						if (signalGroup.mGroup != null)
+							signalGroup.mGroup.mGroupMap[signalGroup.mName] = signalGroup;
+
 						parseState = .None;
 						break;
 					}
@@ -1393,6 +1558,41 @@ class SigData
 					}
 
 					parseState = .Scope(dataIdx + 1);
+				case .Timescale:
+					var str = NextString();
+					if (str == "$end")
+					{
+						double scale = 0;
+						int scaleLen = 2;
+
+						if (timescaleStr.EndsWith("ms"))
+							scale = 1e-3;
+						else if (timescaleStr.EndsWith("us"))
+							scale = 1e-6;
+						else if (timescaleStr.EndsWith("ns"))
+							scale = 1e-9;
+						else if (timescaleStr.EndsWith("ps"))
+							scale = 1e-12;
+						else if (timescaleStr.EndsWith("fs"))
+							scale = 1e-15;
+						else if (timescaleStr.EndsWith("s"))
+						{
+							scale = 1;
+							scaleLen = 1;
+						}	
+
+						if (scale != 0)
+						{
+							if (double.Parse(timescaleStr.Substring(0, timescaleStr.Length - scaleLen)) case .Ok(var val))
+							{
+								mTimescale = val * scale;
+							}
+						}
+
+						parseState = .None;
+						break;
+					}
+					timescaleStr.Append(str);
 				case .Var(let dataIdx):
 					var str = NextString();
 					if (str == "$end")
@@ -1406,22 +1606,25 @@ class SigData
 									signalDataMap.Resize(varData.mID + 1);
 								if (signalDataMap[varData.mID] == null)
 								{
-									var signalData = new SignalData();
-									signalData.mNumBits = varData.mNumBits;
+									var signalData = new SignalData(varData.mNumBits);
 									signalDataMap[varData.mID] = signalData;
 								}
+
+								var signalGroup = signalGroupStack.Back;
 
 								Signal signal = new Signal();
 								if (varData.mKind == "reg")
 									signal.mKind = .Reg;
 								else if (varData.mKind == "parameter")
 									signal.mKind = .Parameter;
+								signal.mGroup = signalGroup;
 
 								signal.mName = new .(varData.mName);
 								if (!varData.mDims.IsEmpty)
 									signal.mDims = new .(varData.mDims);
 								signal.mSignalData = signalDataMap[varData.mID]..AddRef();
-								signalGroupStack.Back.mSignals.Add(signal);
+								signalGroup.mSignals.Add(signal);
+								signalGroup.mSignalMap[signal.mName] = signal;
 							}
 						}
 
@@ -1437,15 +1640,16 @@ class SigData
 						varData.mNumBits = int32.Parse(str).GetValueOrDefault();
 					case 2:
 						if (str.Length == 1)
-							varData.mID = *(uint8*)str.Ptr;
-						else if (str.Length == 2)
-							varData.mID = *(uint16*)str.Ptr;
+						{
+							varData.mID = *(uint8*)str.Ptr - 32;
+						}
 						else
 						{
 							for (int i < str.Length)
 							{
-								varData.mID *= 256;
-								varData.mID += (uint8)str[i];
+								// Id range is from \x33 to \x126
+								varData.mID *= 95;
+								varData.mID += (uint8)str[i] - 32;
 							}
 						}
 					case 3:
@@ -1461,15 +1665,41 @@ class SigData
 			if (atEnd)
 				break;
 
-			carryoverSize = (.)((data + dataLen) - curPtr);
+			carryoverSize = (.)((data + dataLen) - curPtr - 1);
 			if (carryoverSize < 0)
 			{
 				carryoverSize = 0;
 			}
 			else if (carryoverSize > 0)
+			{
+				if (data[dataLen - carryoverSize] == 0)
+				{
+					NOP!();
+				}
+
 				Internal.MemMove(data, data + dataLen - carryoverSize, carryoverSize);
+			}
 		}
 
+		mRoot.Finish();
+
 		return .Ok;
+	}
+
+	public Signal GetSignal(String signalPath)
+	{
+		SignalGroup curGroup = mRoot;
+		for (var name in signalPath.Split('/'))
+		{
+			if (@name.HasMore)
+			{
+				curGroup = curGroup.GetGroup(name);
+				if (curGroup == null)
+					return null;
+			}
+			else
+				return curGroup.GetSignal(name);
+		}
+		return null;
 	}
 }
