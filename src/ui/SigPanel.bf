@@ -57,23 +57,11 @@ class SigPanel : DockedWidget
 		}
 	}
 
-	[Reflect]
-	public enum DataFormat
-	{
-		Auto,
-		Binary,
-		Hex,
-		Decimal,
-		DecimalSigned,
-		Octal,
-		Ascii,
-	}
-
 	public class Entry
 	{
 		public Signal mSignal;
 
-		public DataFormat mDataFormat = .Auto;
+		public SigUtils.DataFormat mDataFormat = .Auto;
 		public bool mReverseBits;
 		public bool mInvertBits;
 		public bool mRightJustify;
@@ -82,7 +70,7 @@ class SigPanel : DockedWidget
 		public uint32 mColorUndef;
 		public float mY;
 
-		public DataFormat DataFormat
+		public SigUtils.DataFormat DataFormat
 		{
 			get
 			{
@@ -104,6 +92,36 @@ class SigPanel : DockedWidget
 			}
 
 			var dataFormat = DataFormat;
+
+			if (signalData.mStrings != null)
+			{
+
+				uint64 val = 0;
+				bool hasX = false;
+				bool hasZ = false;
+
+				for (int bit < signalData.mNumBits)
+				{
+					uint8 bVal = (.)(decodedData[bit / 16] >> ((bit % 16) * 2)) & 3;
+					if (bVal == 2)
+						hasX = true;
+					else if (bVal == 3)
+						hasZ = true;
+					val += (uint64)bVal << bit;
+				}
+
+				if (val < (.)signalData.mStrings.Count)
+				{
+					var str = signalData.mStrings[(.)val];
+					if (str != null)
+					{
+						outStr.Append(str);
+						return;
+					}
+				}
+				dataFormat = .Decimal;
+			}
+
 			switch (dataFormat)
 			{
 			case .Binary:
@@ -112,7 +130,7 @@ class SigPanel : DockedWidget
 				for (int bit in (0..<signalData.mNumBits).Reversed)
 				{
 					uint8 bVal = (.)(decodedData[bit / 16] >> ((bit % 16) * 2)) & 3;
-					outStr.Append(Utils.sBinaryChars[bVal]);
+					outStr.Append(SigUtils.sBinaryChars[bVal]);
 				}
 			case .Hex:
 				if (addPrefix)
@@ -120,7 +138,7 @@ class SigPanel : DockedWidget
 				for (int nibble = (signalData.mNumBits + 3)/4 - 1; nibble >= 0; nibble--)
 				{
 					uint8 nVal = (.)(decodedData[nibble / 4] >> ((nibble % 4) * 8)) & 0xFF;
-					outStr.Append(Utils.sHexChars[nVal]);
+					outStr.Append(SigUtils.sHexChars[nVal]);
 				} 
 			case .Octal:
 				if (addPrefix)
@@ -132,7 +150,7 @@ class SigPanel : DockedWidget
 					int oVal = (((decodedData[(bit) / 16] >> (((bit) % 16) * 2)) & 3) << 0) |
 						(((decodedData[(bit + 1) / 16] >> (((bit + 1) % 16) * 2)) & 3) << 2) |
 						(((decodedData[(bit + 2) / 16] >> (((bit + 2) % 16) * 2)) & 3) << 4);
-					outStr.Append(Utils.sOctalChars[oVal]);
+					outStr.Append(SigUtils.sOctalChars[oVal]);
 				}
 			case .Decimal, .DecimalSigned:
 				if (addPrefix)
@@ -178,11 +196,56 @@ class SigPanel : DockedWidget
 			var signalData = mSignal.mSignalData;
 			int decodeIdx = 0;
 
+			uint32* decodedData = null;
 			uint32* prevDecodedData = null;
 
 			for (var chunk in signalData.mChunks)
 			{
 				if (valueTick > chunk.mEndTick)
+					continue;
+
+				int64 curTick = chunk.mStartTick;
+
+				var chunkData = chunk.mRawData;
+
+				uint8* chunkPtr = chunkData.mBuffer.Ptr;
+				uint8* chunkEndPtr = chunkPtr + chunkData.mBuffer.Count;
+				while (chunkPtr < chunkEndPtr)
+				{
+					decodedData = &decodedDataBuf[decodeIdx % 2];
+					prevDecodedData = &decodedDataBuf[(decodeIdx % 2) ^ 1];
+
+					// Zero out trailing fill bits in the last signal word 
+					decodedData[signalData.mNumBits/16] = 0;
+
+					chunkData.Decode(ref chunkPtr, decodedData, var tickDelta);
+					curTick += tickDelta;
+
+					if (curTick > valueTick)
+					{
+						GetValueString(prevDecodedData, outStr, true);
+						return;
+					}
+
+					decodeIdx++;
+				}
+			}
+
+			if (decodedData != null)
+				GetValueString(decodedData, outStr, true);
+		}
+
+		public Result<int64> FindValue(uint32* value, int64 startTick)
+		{
+			uint32[2][4096] decodedDataBuf = ?;
+			var signalData = mSignal.mSignalData;
+			int decodeIdx = 0;
+
+			uint32* prevDecodedData = null;
+
+			for (var chunk in signalData.mChunks)
+			{
+				if (startTick > chunk.mEndTick)
 					continue;
 
 				int64 curTick = chunk.mStartTick;
@@ -202,18 +265,73 @@ class SigPanel : DockedWidget
 					chunkData.Decode(ref chunkPtr, decodedData, var tickDelta);
 					curTick += tickDelta;
 
-					if (curTick > valueTick)
+					if (curTick >= startTick)
 					{
-						GetValueString(prevDecodedData, outStr, true);
-						return;
+						if (value[0] == decodedData[0])
+						{
+							bool matches = true;
+							if (chunkData.mNumBits > 16)
+							{
+								for (int checkIdx < (chunkData.mNumBits + 15) / 16)
+									matches &= value[checkIdx] == decodedData[checkIdx];
+							}
+
+							if (matches)
+								return .Ok(curTick);
+						}
 					}
 
 					decodeIdx++;
 				}
 			}
 
-			if (prevDecodedData != null)
-				GetValueString(prevDecodedData, outStr, true);
+			return .Err;
+		}
+
+		public (int64 prev, int64 next) FindEdges(int64 startTick)
+		{
+			uint32[4096] decodedData = ?;
+			var signalData = mSignal.mSignalData;
+			int decodeIdx = 0;
+
+			int64 prevTick = -1;
+
+			prevTick = gApp.mSigData.mStartTick;
+
+			for (var chunk in signalData.mChunks)
+			{
+				if (startTick > chunk.mEndTick)
+				{
+					prevTick = chunk.mEndTick;
+					continue;
+				}
+
+				int64 curTick = chunk.mStartTick;
+
+				var chunkData = chunk.mRawData;
+
+				uint8* chunkPtr = chunkData.mBuffer.Ptr;
+				uint8* chunkEndPtr = chunkPtr + chunkData.mBuffer.Count;
+				while (chunkPtr < chunkEndPtr)
+				{
+					// Zero out trailing fill bits in the last signal word 
+					decodedData[signalData.mNumBits/16] = 0;
+
+					chunkData.Decode(ref chunkPtr, &decodedData, var tickDelta);
+					curTick += tickDelta;
+
+					if (curTick < startTick)
+						prevTick = curTick;
+					if (curTick > startTick)
+					{
+						return (prevTick, curTick);
+					}
+
+					decodeIdx++;
+				}
+			}
+
+			return (prevTick, -1);
 		}
 	}
 
@@ -222,6 +340,7 @@ class SigPanel : DockedWidget
 	public SigViewPanel mSigViewPanel;
 	public float mWantListWidth;
 	public List<Entry> mEntries = new .() ~ DeleteContainerAndItems!(_);
+	public bool mValuesDirty;
 
 	public this()
 	{
@@ -241,6 +360,66 @@ class SigPanel : DockedWidget
 	{
 		/*using (g.PushColor(0xFF00FF00))
 			g.FillRect(0, 0, mWidth, mHeight);*/
+	}
+
+	public override void DrawAll(Graphics g)
+	{
+		base.DrawAll(g);
+
+		float ofsY = (.)mSigViewPanel.mVertScrollbar.mContentPos;
+
+		using (g.PushClip(0, GS!(20), mWidth - GS!(16), mHeight - GS!(20)))
+		{
+			float ofs = (.)mSigViewPanel.mVertScrollbar.mContentPos;
+
+			for (var entry in mEntries)
+			{
+				/*uint32 color = 0;
+				if (@entry.Index % 2 == 0)
+					color = 0x08FFFFFF;
+
+				if (mSigViewPanel.mMousePos != null)
+				{
+					if ((mSigViewPanel.mMousePos.Value.y >= entry.mY) &&
+						(mSigViewPanel.mMousePos.Value.y < entry.mY + GS!(20)))
+						color = 0x18FFFFFF;
+				}*/
+
+				uint32 color = 0;
+				if (@entry.Index % 2 == 0)
+				{
+					Color.ToHSV(entry.mColor, var h, var s, var v);
+					s *= 0.3f;
+					color = Color.FromHSV(h, s, v, 0x10);
+				}
+				else
+				{
+					Color.ToHSV(entry.mColor, var h, var s, var v);
+					s *= 0.3f;
+					color = Color.FromHSV(h, s, v, 0x08);
+				}
+
+				if (mSigViewPanel.mMousePos != null)
+				{
+					if ((mSigViewPanel.mMousePos.Value.y + ofsY >= entry.mY) &&
+						(mSigViewPanel.mMousePos.Value.y + ofsY < entry.mY + GS!(20)))
+					{
+						//color = 0x18FFFFFF;
+						Color.ToHSV(entry.mColor, var h, var s, var v);
+						s *= 0.2f;
+						color = Color.FromHSV(h, s, v, 0x1B);
+					}
+				}
+
+				if (color != 0)
+				{
+					using (g.PushColor(color))
+					{
+						g.FillRect(0, entry.mY - ofs, mWidth, GS!(20));
+					}
+				}
+			}
+		}
 	}
 
 	public override void Resize(float x, float y, float width, float height)
@@ -286,6 +465,16 @@ class SigPanel : DockedWidget
 			}
 
 			subListViewItem.Label = valueStr;
+		}
+	}
+
+	public override void Update()
+	{
+		base.Update();
+		if (mValuesDirty)
+		{
+			UpdateValues();
+			mValuesDirty = false;
 		}
 	}
 }

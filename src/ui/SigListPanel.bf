@@ -140,6 +140,12 @@ class SigListPanel : Panel
 		var rootListViewItem = mListView.GetRoot();
 		rootListViewItem.Clear();
 
+		if (sigGroup.mSortDirty)
+		{
+			sigGroup.mSignals.Sort(scope (lhs, rhs) => String.Compare(lhs.mName, rhs.mName, true));
+			sigGroup.mSortDirty = false;
+		}
+
 		for (var item in sigGroup.mSignals)
 		{
 			var listViewItem = rootListViewItem.CreateChildItem() as SigListViewItem;
