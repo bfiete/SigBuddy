@@ -158,8 +158,14 @@ static struct SigUtils
 			uint64 cVal = 0;
 			if ((c >= '0') && (c <= '9'))
 				cVal = (.)(c - '0');
-			else if ((c >= 'A') && (c <= 'F'))
+			else if ((c >= 'A') && (c <= 'F') && (radix == 16))
+			{
 				cVal = (.)(c - 'A') + 10;
+			}
+			else if ((c >= 'a') && (c <= 'f') && (radix == 16))
+			{
+				cVal = (.)(c - 'a') + 10;
+			}
 			else
 				return .Err;
 

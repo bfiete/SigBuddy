@@ -205,14 +205,18 @@ class SigViewPanel : Panel
 		bool isDebug = mWidgetWindow.IsKeyDown(.Tilde);
 		if ((isDebug) && (mUpdateCnt % 60 == 0))
 			Debug.WriteLine($"LODTickTarget: {lodTickTarget} LODScale:{lodSelector} ({1<<lodSelector})");
-		
-		for (var entry in gApp.mSigPanel.mEntries)
+
+
+		void DrawSignal(SigPanel.Entry entry)
 		{
+			if (entry.mY == null)
+				return;
+
 			uint32 color = entry.mColor;
 
 			//float curX = 0;
 			//float curY = @entry.Index * 20 + 20;
-			float curY = entry.mY;
+			float curY = entry.mY.Value;
 
 			/*using (g.PushColor(0xFF00FF00))
 			{
@@ -506,6 +510,25 @@ class SigViewPanel : Panel
 					Draw(prevSigX, sigX, prevDecodedData);
 			}
 		}
+
+		void DrawEntry(SigPanel.Entry entry)
+		{
+			if (entry.mSignal != null)
+				DrawSignal(entry);
+
+			if (entry.mChildren != null)
+			{
+				for (var child in entry.mChildren)
+				{
+					DrawEntry(child);
+				}
+			}
+		}
+
+		for (var entry in gApp.mSigPanel.mEntries)
+		{
+			DrawEntry(entry);
+		}
 	}
 
 	public override void Draw(Graphics g)
@@ -714,6 +737,26 @@ class SigViewPanel : Panel
 			CursorTick = null;
 		}
 	}
+	
+	public void FindPrev()
+	{
+		if (mLastFindEntry == null)
+			return;
+
+		int64 endTick = gApp.mSigData.mEndTick;
+		if (mCursorTick != null)
+			endTick = (.)mCursorTick.Value;
+
+		switch (mLastFindEntry.FindValueBefore(mLastFindData.Ptr, endTick))
+		{
+		case .Ok(let val):
+			CursorTick = val;
+			EnsureCursorVisible();
+		case .Err(let err):
+			gApp.Fail("Start of timeline reached without finding value");
+			CursorTick = null;
+		}
+	}
 
 	public override void KeyDown(KeyCode keyCode, bool isRepeat)
 	{
@@ -767,6 +810,28 @@ class SigViewPanel : Panel
 			case .PageDown:
 				CursorTick = Math.Min(mCursorTick.GetValueOrDefault() + mWidth * 0.9 / mScale, gApp.mSigData.mEndTick);
 				EnsureCursorVisible();
+			case .Delete:
+				var dialog = ThemeFactory.mDefault.CreateDialog("Delete?", 
+					"Are you sure you want to delete entry?",
+					DarkTheme.sDarkTheme.mIconWarning);
+				dialog.mDefaultButton = dialog.AddButton("Yes", new (evt) =>
+					{
+						gApp.mSigPanel.mSigActiveListPanel.DoDelete();
+					});
+				dialog.mEscButton = dialog.AddButton("No", new (evt) =>
+					{
+						dialog.Close();
+					});
+				dialog.PopupWindow(mWidgetWindow);
+			default:
+			}
+		}
+		else if (mWidgetWindow.GetKeyFlags() == .Ctrl)
+		{
+			switch (keyCode)
+			{
+			case (.)'R':
+				gApp.mSigPanel.mSigActiveListPanel.DoRename();
 			default:
 			}
 		}

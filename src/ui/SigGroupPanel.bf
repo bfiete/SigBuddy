@@ -162,11 +162,25 @@ class SigGroupPanel : Panel
 			}
 		}
 
-		if (gApp.mSigData.mRoot.mNestedGroups != null)
+		var sigData = gApp.mSigData;
+
+		if (sigData.mRoot.mNestedGroups != null)
 		{
-			for (var subGroup in gApp.mSigData.mRoot.mNestedGroups)
+			var topItem = mListView.GetRoot() as SigGroupListViewItem;
+
+			if (!sigData.mRoot.mSignals.IsEmpty)
 			{
-				HandleGroup(mListView.GetRoot() as SigGroupListViewItem, subGroup);
+				topItem = mListView.GetRoot().CreateChildItem() as SigGroupListViewItem;
+				topItem.mSignalGroup = sigData.mRoot;
+				topItem.Label = "TOP";
+				topItem.IconImage = DarkTheme.sDarkTheme.GetImage(.ProjectFolder);
+				topItem.MakeParent();
+				topItem.Open(true, true);
+			}
+
+			for (var subGroup in sigData.mRoot.mNestedGroups)
+			{
+				HandleGroup(topItem, subGroup);
 			}
 		}
 	}

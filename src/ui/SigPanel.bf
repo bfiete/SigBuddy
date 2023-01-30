@@ -59,16 +59,27 @@ class SigPanel : DockedWidget
 
 	public class Entry
 	{
+		public Entry mParent;
+		public List<Entry> mChildren ~ DeleteContainerAndItems!(_);
+
 		public Signal mSignal;
+		public String mName ~ delete _;
 
 		public SigUtils.DataFormat mDataFormat = .Auto;
 		public bool mReverseBits;
 		public bool mInvertBits;
 		public bool mRightJustify;
 		public bool mPopCount;
+		public bool mAwaitingRename;
 		public uint32 mColor = 0xFF00FF00;
 		public uint32 mColorUndef;
-		public float mY;
+		public float? mY;
+		public List<Entry> ParentList => (mParent == null) ? gApp.mSigPanel.mEntries : mParent.mChildren;
+
+		public this()
+		{
+
+		}
 
 		public SigUtils.DataFormat DataFormat
 		{
@@ -192,6 +203,9 @@ class SigPanel : DockedWidget
 
 		public void GetValueStringAtTick(double valueTick, String outStr)
 		{
+			if (mSignal == null)
+				return;
+
 			uint32[2][4096] decodedDataBuf = ?;
 			var signalData = mSignal.mSignalData;
 			int decodeIdx = 0;
@@ -288,6 +302,64 @@ class SigPanel : DockedWidget
 			return .Err;
 		}
 
+		public Result<int64> FindValueBefore(uint32* value, int64 endTick)
+		{
+			uint32[2][4096] decodedDataBuf = ?;
+			var signalData = mSignal.mSignalData;
+			int decodeIdx = 0;
+
+			uint32* prevDecodedData = null;
+
+			int64 foundTick = -1;
+
+			for (var chunk in signalData.mChunks)
+			{
+				int64 curTick = chunk.mStartTick;
+
+				var chunkData = chunk.mRawData;
+
+				uint8* chunkPtr = chunkData.mBuffer.Ptr;
+				uint8* chunkEndPtr = chunkPtr + chunkData.mBuffer.Count;
+				while (chunkPtr < chunkEndPtr)
+				{
+					uint32* decodedData = &decodedDataBuf[decodeIdx % 2];
+					prevDecodedData = &decodedDataBuf[(decodeIdx % 2) ^ 1];
+
+					// Zero out trailing fill bits in the last signal word 
+					decodedData[signalData.mNumBits/16] = 0;
+
+					chunkData.Decode(ref chunkPtr, decodedData, var tickDelta);
+					curTick += tickDelta;
+
+					if (curTick >= endTick)
+					{
+						if (foundTick != -1)
+							return .Ok(foundTick);
+						return .Err;
+					}
+
+					if (value[0] == decodedData[0])
+					{
+						bool matches = true;
+						if (chunkData.mNumBits > 16)
+						{
+							for (int checkIdx < (chunkData.mNumBits + 15) / 16)
+								matches &= value[checkIdx] == decodedData[checkIdx];
+						}
+
+						if (matches)
+							foundTick = curTick;
+					}
+
+					decodeIdx++;
+				}
+			}
+
+			if (foundTick != -1)
+				return .Ok(foundTick);
+			return .Err;
+		}
+
 		public (int64 prev, int64 next) FindEdges(int64 startTick)
 		{
 			uint32[4096] decodedData = ?;
@@ -341,6 +413,7 @@ class SigPanel : DockedWidget
 	public float mWantListWidth;
 	public List<Entry> mEntries = new .() ~ DeleteContainerAndItems!(_);
 	public bool mValuesDirty;
+	public bool mEntryListViewDirty;
 
 	public this()
 	{
@@ -362,6 +435,20 @@ class SigPanel : DockedWidget
 			g.FillRect(0, 0, mWidth, mHeight);*/
 	}
 
+	public void WithEntries(delegate void (Entry entry) dlg)
+	{
+		void Handle(List<Entry> entryList)
+		{
+			for (var entry in entryList)
+			{
+				dlg(entry);
+				if (entry.mChildren != null)
+					Handle(entry.mChildren);
+			}
+		}
+		Handle(mEntries);
+	}
+
 	public override void DrawAll(Graphics g)
 	{
 		base.DrawAll(g);
@@ -372,53 +459,73 @@ class SigPanel : DockedWidget
 		{
 			float ofs = (.)mSigViewPanel.mVertScrollbar.mContentPos;
 
-			for (var entry in mEntries)
-			{
-				/*uint32 color = 0;
-				if (@entry.Index % 2 == 0)
-					color = 0x08FFFFFF;
-
-				if (mSigViewPanel.mMousePos != null)
+			int idx = 0;
+			WithEntries(scope [&] (entry) =>
 				{
-					if ((mSigViewPanel.mMousePos.Value.y >= entry.mY) &&
-						(mSigViewPanel.mMousePos.Value.y < entry.mY + GS!(20)))
-						color = 0x18FFFFFF;
-				}*/
-
-				uint32 color = 0;
-				if (@entry.Index % 2 == 0)
-				{
-					Color.ToHSV(entry.mColor, var h, var s, var v);
-					s *= 0.3f;
-					color = Color.FromHSV(h, s, v, 0x10);
-				}
-				else
-				{
-					Color.ToHSV(entry.mColor, var h, var s, var v);
-					s *= 0.3f;
-					color = Color.FromHSV(h, s, v, 0x08);
-				}
-
-				if (mSigViewPanel.mMousePos != null)
-				{
-					if ((mSigViewPanel.mMousePos.Value.y + ofsY >= entry.mY) &&
-						(mSigViewPanel.mMousePos.Value.y + ofsY < entry.mY + GS!(20)))
+					/*uint32 color = 0;
+					if (@entry.Index % 2 == 0)
+						color = 0x08FFFFFF;
+	
+					if (mSigViewPanel.mMousePos != null)
 					{
-						//color = 0x18FFFFFF;
+						if ((mSigViewPanel.mMousePos.Value.y >= entry.mY) &&
+							(mSigViewPanel.mMousePos.Value.y < entry.mY + GS!(20)))
+							color = 0x18FFFFFF;
+					}*/
+
+					if (entry.mY == null)
+						return;
+
+					var entryY = entry.mY.Value;
+
+					uint32 color = 0;
+					if (idx % 2 == 0)
+					{
 						Color.ToHSV(entry.mColor, var h, var s, var v);
-						s *= 0.2f;
-						color = Color.FromHSV(h, s, v, 0x1B);
+						s *= 0.3f;
+						color = Color.FromHSV(h, s, v, 0x10);
 					}
-				}
-
-				if (color != 0)
-				{
-					using (g.PushColor(color))
+					else
 					{
-						g.FillRect(0, entry.mY - ofs, mWidth, GS!(20));
+						Color.ToHSV(entry.mColor, var h, var s, var v);
+						s *= 0.3f;
+						color = Color.FromHSV(h, s, v, 0x08);
 					}
-				}
-			}
+
+					if (mSigViewPanel.mMousePos != null)
+					{
+						if ((mSigViewPanel.mMousePos.Value.y + ofsY >= entry.mY) &&
+							(mSigViewPanel.mMousePos.Value.y + ofsY < entry.mY + GS!(20)))
+						{
+							//color = 0x18FFFFFF;
+							Color.ToHSV(entry.mColor, var h, var s, var v);
+							s *= 0.2f;
+							color = Color.FromHSV(h, s, v, 0x1B);
+						}
+					}
+	
+					if (color != 0)
+					{
+						using (g.PushColor(color))
+						{
+							g.FillRect(0, entryY - ofs, mWidth, GS!(20));
+						}
+					}
+
+					if (entry.mSignal == null)
+					{
+						Color.ToHSV(entry.mColor, var h, var s, var v);
+						s *= 0.7f;
+						color = Color.FromHSV(h, s, v, 0x38);
+						using (g.PushColor(color))
+						{
+							float x = mSigActiveListPanel.mWidth;
+							g.FillRect(x, entryY - ofs, mWidth - x, GS!(20));
+						}
+					}
+
+					idx++;
+				});
 		}
 	}
 
@@ -449,32 +556,70 @@ class SigPanel : DockedWidget
 
 	public void UpdateValues()
 	{
-		var root = mSigActiveListPanel.mListView.GetRoot();
-
 		var valueStr = scope String();
-
-		for (int itemIdx < root.GetChildCount())
-		{
-			valueStr.Clear();
-			var listViewItem = (SigActiveListViewItem)root.GetChildAtIndex(itemIdx);
-			var subListViewItem = (SigActiveListViewItem)listViewItem.GetSubItem(1);
-
-			if (mSigViewPanel.mCursorTick != null)
+		mSigActiveListPanel.mListView.GetRoot().WithItems(scope (lvi) =>
 			{
-				listViewItem.mEntry.GetValueStringAtTick(mSigViewPanel.mCursorTick.Value, valueStr);
-			}
-
-			subListViewItem.Label = valueStr;
-		}
+				valueStr.Clear();
+				var listViewItem = (SigActiveListViewItem)lvi;
+				var subListViewItem = (SigActiveListViewItem)listViewItem.GetSubItem(1);
+	
+				if (mSigViewPanel.mCursorTick != null)
+				{
+					listViewItem.mEntry.GetValueStringAtTick(mSigViewPanel.mCursorTick.Value, valueStr);
+				}
+	
+				subListViewItem.Label = valueStr;
+			});
 	}
 
 	public override void Update()
 	{
 		base.Update();
+
+		if (mEntryListViewDirty)
+		{
+			mSigActiveListPanel.RebuildListView();
+			mEntryListViewDirty = false;
+			mValuesDirty = true;
+		}
+
 		if (mValuesDirty)
 		{
 			UpdateValues();
 			mValuesDirty = false;
 		}
+	}
+
+	public Entry CreateEntry()
+	{
+		SigActiveListViewItem parentLVI = (.)mSigActiveListPanel.mListView.GetRoot();
+		Entry parent = null;
+		int insertIdx = mEntries.Count;
+
+		var activeListView = mSigActiveListPanel.mListView;
+		activeListView.GetRoot().WithItems(scope [&] (lvi) =>
+			{
+				if (lvi.Focused)
+				{
+					var activeLVI = (SigActiveListViewItem)lvi;
+					parent = activeLVI.mEntry.mParent;
+					if (parent == null)
+						insertIdx = mEntries.IndexOf(activeLVI.mEntry);
+					else
+						insertIdx = parent.mChildren.IndexOf(activeLVI.mEntry);
+					parentLVI = (.)activeLVI.mParentItem;
+				}
+			});
+
+		var entry = new SigPanel.Entry();
+		if (parent == null)
+			mEntries.Insert(insertIdx, entry);
+		else
+			parent.mChildren.Insert(insertIdx, entry);
+		entry.mParent = parent;
+
+		mEntryListViewDirty = true;
+
+		return entry;
 	}
 }

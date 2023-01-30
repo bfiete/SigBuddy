@@ -69,13 +69,31 @@ class FindDialog : DarkDialog
 
 		uint64 value = 0;
 
+		var signalData = selectedEntry.mSignal.mSignalData;
+
 		String text = mEditWidget.GetText(.. scope .());
-		switch (SigUtils.ParseValue(text))
+
+		ValueBlock: do
 		{
-			case .Ok(out value):
-			case .Err:
-				gApp.Fail("Invalid value");
-				return;
+			if (signalData.mStrings != null)
+			{
+				for (var str in signalData.mStrings)
+				{
+					if (text.Equals(str, .OrdinalIgnoreCase))
+					{
+						value = (.)@str.Index;
+						break ValueBlock;
+					}
+				}
+			}
+
+			switch (SigUtils.ParseValue(text))
+			{
+				case .Ok(out value):
+				case .Err:
+					gApp.Fail("Invalid value");
+					return;
+			}
 		}
 
 		uint32[4] findValue = default;
@@ -90,25 +108,28 @@ class FindDialog : DarkDialog
 		sigViewPanel.mLastFindData = new System.Collections.List<uint32>();
 		sigViewPanel.mLastFindData.AddRange(.(&findValue, 4));
 
-		PassLoop: for (int pass < 2)
+		FindBlock: do 
 		{
-			int64 startTick = (.)sigViewPanel.mCursorTick.GetValueOrDefault();
-			if (pass == 1)
+			PassLoop: for (int pass < 2)
 			{
-				if (startTick == 0)
-					break;
-				startTick = 0;
-			}
+				int64 startTick = (.)sigViewPanel.mCursorTick.GetValueOrDefault();
+				if (pass == 1)
+				{
+					if (startTick == 0)
+						break;
+					startTick = 0;
+				}
 
-			switch (selectedEntry.FindValue(&findValue, startTick))
-			{
-			case .Ok(let val):
-				gApp.mSigPanel.mSigViewPanel.CursorTick = val;
-				gApp.mSigPanel.mSigViewPanel.EnsureCursorVisible();
-				break PassLoop;
-			case .Err(let err):
-				gApp.Fail("Value not found");
+				switch (selectedEntry.FindValue(&findValue, startTick))
+				{
+				case .Ok(let val):
+					gApp.mSigPanel.mSigViewPanel.CursorTick = val;
+					gApp.mSigPanel.mSigViewPanel.EnsureCursorVisible();
+					break FindBlock;
+				case .Err(let err):
+				}
 			}
+			gApp.Fail("Value not found");
 		}
 		
 		Close();

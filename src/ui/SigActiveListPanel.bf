@@ -10,7 +10,7 @@ using Beefy.geom;
 
 namespace SigBuddy.ui;
 
-class SigActiveListView : DarkListView
+class SigActiveListView : SBListView
 {
 	protected override ListViewItem CreateListViewItem()
 	{
@@ -28,20 +28,12 @@ class SigActiveListView : DarkListView
 	public override void KeyDown(KeyCode keyCode, bool isRepeat)
 	{
 		var sigViewPanel = gApp.mSigPanel.mSigViewPanel;
-
-		switch (keyCode)
-		{
-		case .Left, .Right, .Home, .End, .PageUp, .PageDown:
-			sigViewPanel.KeyDown(keyCode, isRepeat);
-			return;
-		default:
-		}
-
+		sigViewPanel.KeyDown(keyCode, isRepeat);
 		base.KeyDown(keyCode, isRepeat);
 	}
 }
 
-class SigActiveListViewItem : DarkListViewItem
+class SigActiveListViewItem : SBListViewItem
 {
 	public SigPanel.Entry mEntry;
 
@@ -57,8 +49,13 @@ class SigActiveListViewItem : DarkListViewItem
 
 		if (mEntry != null)
 		{
-			SelfToOtherTranslate(mListView.mScrollContent, 0, 0, var transX, var transY);
-			mEntry.mY = transY + GS!(20);
+			if ((mVisible) && (mY + GS!(15) <= mParentItem.mSelfHeight + mParentItem.mChildAreaHeight))
+			{
+				SelfToOtherTranslate(mListView.mScrollContent, 0, 0, var transX, var transY);
+				mEntry.mY = transY + GS!(20);
+			}
+			else
+				mEntry.mY = null;
 		}
 	}
 
@@ -66,12 +63,54 @@ class SigActiveListViewItem : DarkListViewItem
 	{
 		base.KeyDown(keyCode, isRepeat);
 	}
+
+	public override void Update()
+	{
+		base.Update();
+
+		var listView = (SigActiveListView)mListView;
+		if ((mEntry?.mAwaitingRename == true) && (listView.mEditWidget == null))
+		{
+			listView.EditListViewItem(this);
+			listView.GetRoot().SelectItemExclusively(this);
+		}
+
+		if (mEntry != null)
+		{
+			mTextColor = (mEntry.mSignal != null) ? 0xFFFFFFFF : 0xFFA090FF;
+		}
+	}
+
+	public override void ShowTooltip(float mouseX, float mouseY)
+	{
+	    float x = GS!(8);
+	    if (mColumnIdx == 0)
+	        x = LabelX + GS!(8);
+
+		var fullName = mEntry.mSignal.GetFullName(.. scope .());
+	    DarkTooltipManager.ShowTooltip(fullName, this, x, mHeight);
+	}
+
+	public override bool WantsTooltip(float mouseX, float mouseY)
+	{
+		if (mEntry?.mSignal != null)
+			return true;
+		return base.WantsTooltip(mouseX, mouseY);
+	}
 }
 
 class SigActiveListPanel : Panel
 {
+	public struct ListViewState
+	{
+		public bool mFocused;
+		public bool mSelected;
+		public bool mIsOpen;
+	}
+
 	public SigPanel mSigPanel;
 	public SigActiveListView mListView;
+	public Dictionary<SigPanel.Entry, ListViewState> mListViewStates = new .() ~ delete _;
 
 	public this()
 	{
@@ -87,7 +126,7 @@ class SigActiveListPanel : Panel
 		//mListView.mVertScrollbar.mContentSize = GS!(500);
 		mListView.mLabelX = GS!(6);
 		//mListView.mIconX = GS!(20);
-		//mListView.mChildIndent = GS!(12);
+		mListView.mChildIndent = GS!(8);
 		mListView.UpdateScrollbars();
 		//mListView.mOnFocusChanged.Add(new => FocusChangedHandler);
 
@@ -103,6 +142,7 @@ class SigActiveListPanel : Panel
 
 		mListView.mOnDragEnd.Add(new => HandleDragEnd);
 		mListView.mOnDragUpdate.Add(new => HandleDragUpdate);
+		mListView.mOnEditDone.Add(new => HandleEditDone);
 
 		mListView.AddColumn(GS!(100), "Name");
 		mListView.AddColumn(GS!(100), "Value");
@@ -298,34 +338,48 @@ class SigActiveListPanel : Panel
 
 		if (itemClicked)
 		{
-			var subMenu = menu.AddItem("Data Format");
+			Menu subMenu = null;
 
 			HashSet<SigUtils.DataFormat> usedFormats = scope .();
-			mListView.GetRoot().WithSelectedItems(scope (item) =>
+			bool hasParents = false;
+			bool hasNonParents = false;
+
+			mListView.GetRoot().WithSelectedItems(scope [&] (item) =>
 				{
 					var activeItem = (SigActiveListViewItem)item;
-					usedFormats.Add(activeItem.mEntry.DataFormat);
+					var entry = activeItem.mEntry;
+					if (entry.mSignal != null)
+						usedFormats.Add(activeItem.mEntry.DataFormat);
+					if (entry.mChildren != null)
+						hasParents = true;
+					else
+						hasNonParents = true;
 				});
 
-			//Enum.GetEnumerator(); // SigPanel.DataFormat
-			for (var value in Enum.GetEnumerator(typeof(SigUtils.DataFormat)))
+
+			if (!usedFormats.IsEmpty)
 			{
-				if (value.value == 0)
-					continue;
+				subMenu = menu.AddItem("Data Format");
+				//Enum.GetEnumerator(); // SigPanel.DataFormat
+				for (var value in Enum.GetEnumerator(typeof(SigUtils.DataFormat)))
+				{
+					if (value.value == 0)
+						continue;
 
-				var item = subMenu.AddItem(value.name);
-				if (usedFormats.Contains((.)value.value))
-					item.mIconImage = DarkTheme.sDarkTheme.GetImage(.Check);
+					var item = subMenu.AddItem(value.name);
+					if (usedFormats.Contains((.)value.value))
+						item.mIconImage = DarkTheme.sDarkTheme.GetImage(.Check);
 
-				item.mOnMenuItemSelected.Add(new (menu) =>
-					{
-						mListView.GetRoot().WithSelectedItems(scope (item) =>
-							{
-								var activeItem = (SigActiveListViewItem)item;
-								activeItem.mEntry.mDataFormat = (.)value.value;
-								gApp.mSigPanel.UpdateValues();
-							});
-					});
+					item.mOnMenuItemSelected.Add(new (menu) =>
+						{
+							mListView.GetRoot().WithSelectedItems(scope (item) =>
+								{
+									var activeItem = (SigActiveListViewItem)item;
+									activeItem.mEntry.mDataFormat = (.)value.value;
+									gApp.mSigPanel.UpdateValues();
+								});
+						});
+				}
 			}
 
 			ColorSelectWidget colorSelectWidget = new ColorSelectWidget();
@@ -391,38 +445,96 @@ class SigActiveListPanel : Panel
 			subMenu = menu.AddItem("Delete");
 			subMenu.mOnMenuItemSelected.Add(new (menu) =>
 				{
-					var root = mListView.GetRoot();
+					DoDelete();
+				});
 
-					int checkIdx = 0;
-					while (checkIdx < root.GetChildCount())
+			if (hasNonParents)
+			{
+				subMenu = menu.AddItem("Make Group");
+				subMenu.mOnMenuItemSelected.Add(new (menu) =>
 					{
-						var listViewItem = (SigActiveListViewItem)root.GetChildAtIndex(checkIdx);
-						if (listViewItem.Selected)
-						{
-							gApp.mSigPanel.mEntries.Remove(listViewItem.mEntry);
-							delete listViewItem.mEntry;
-							root.RemoveChildItemAt(checkIdx);
-						}
-						else
-							checkIdx++;
-					}
+						mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+							{
+								var listViewItem = (SigActiveListViewItem)lvi;
+								var entry = listViewItem.mEntry;
+
+								if (entry.mChildren == null)
+								{
+									entry.mChildren = new List<SigPanel.Entry>();
+									gApp.mSigPanel.mEntryListViewDirty = true;
+								}
+							});
+					});
+			}
+
+			if (hasParents)
+			{
+				subMenu = menu.AddItem("Flatten Group");
+				subMenu.mOnMenuItemSelected.Add(new (menu) =>
+					{
+						mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+							{
+								var listViewItem = (SigActiveListViewItem)lvi;
+								var entry = listViewItem.mEntry;
+
+								int insertIdx = entry.ParentList.IndexOf(entry) + 1;
+
+								if (entry.mChildren != null)
+								{
+									for (var child in entry.mChildren)
+									{
+										entry.ParentList.Insert(insertIdx, child);
+										insertIdx++;
+									}
+
+									DeleteAndNullify!(entry.mChildren);
+									gApp.mSigPanel.mEntryListViewDirty = true;
+								}
+							});
+
+						gApp.mSigPanel.mEntryListViewDirty = true;
+					});
+			}
+
+			subMenu = menu.AddItem("Rename");
+			subMenu.mOnMenuItemSelected.Add(new (menu) =>
+				{
+					DoRename();
 				});
 
 			menu.AddItem();
 		}
 
-		var subMenu = menu.AddItem("Delete All");
+		var subMenu = menu.AddItem("New Entry");
 		subMenu.mOnMenuItemSelected.Add(new (menu) =>
 			{
-				var root = mListView.GetRoot();
-				int checkIdx = 0;
-				while (root.GetChildCount() > 0)
-				{
-					var listViewItem = (SigActiveListViewItem)root.GetChildAtIndex(0);
-					gApp.mSigPanel.mEntries.Remove(listViewItem.mEntry);
-					delete listViewItem.mEntry;
-					root.RemoveChildItemAt(checkIdx);
-				}
+				var entry = gApp.mSigPanel.CreateEntry();
+				entry.mAwaitingRename = true;
+			});
+
+		subMenu = menu.AddItem("Delete All");
+		subMenu.mOnMenuItemSelected.Add(new (menu) =>
+			{
+				var dialog = ThemeFactory.mDefault.CreateDialog("Delete All?", 
+					"Are you sure you want to delete all entries?",
+					DarkTheme.sDarkTheme.mIconWarning);
+				dialog.mDefaultButton = dialog.AddButton("Yes", new (evt) =>
+					{
+						var root = mListView.GetRoot();
+						int checkIdx = 0;
+						while (root.GetChildCount() > 0)
+						{
+							var listViewItem = (SigActiveListViewItem)root.GetChildAtIndex(0);
+							gApp.mSigPanel.mEntries.Remove(listViewItem.mEntry);
+							delete listViewItem.mEntry;
+							root.RemoveChildItemAt(checkIdx);
+						}
+					});
+				dialog.mEscButton = dialog.AddButton("No", new (evt) =>
+					{
+						dialog.Close();
+					});
+				dialog.PopupWindow(mWidgetWindow);
 			});
 
 		MenuWidget menuWidget = ThemeFactory.mDefault.CreateMenuWidget(menu);
@@ -479,24 +591,80 @@ class SigActiveListPanel : Panel
 	    mListView.Resize(0, 0, mWidth, mHeight);
 	}
 
+	public void SetupNewListViewItem(SigActiveListViewItem listViewItem)
+	{
+		var entry = listViewItem.mEntry;
+		if (entry.mName != null)
+			listViewItem.Label = entry.mName;
+		else if (entry.mSignal != null)
+			listViewItem.Label = entry.mSignal.mName;
+		else
+			listViewItem.Label = "";
+
+		listViewItem.AllowDragging = true;
+
+		var subListViewItem = (SigActiveListViewItem)listViewItem.CreateSubItem(1);
+		subListViewItem.AllowDragging = true;
+
+		if (entry.mChildren != null)
+			listViewItem.MakeParent();
+	}
+
 	public void RebuildListView()
 	{
 		var rootListViewItem = mListView.GetRoot();
+
+		rootListViewItem.WithItems(scope (lvi) =>
+			{
+				var activeLVI = (SigActiveListViewItem)lvi;
+				if (activeLVI.mEntry == null)
+					return;
+
+				if (mListViewStates.TryAdd(activeLVI.mEntry, ?, var state))
+					*state = default;
+
+				state.mFocused |= activeLVI.Focused;
+				state.mSelected |= activeLVI.Selected;
+				state.mIsOpen |= activeLVI.mOpenButton?.mIsOpen == true;
+			});
+
 		rootListViewItem.Clear();
+		bool hadParents = false;
 
-		for (var item in mSigPanel.mEntries)
+		void Rebuild(SigActiveListViewItem parentItem, List<SigPanel.Entry> entries)
 		{
-			var listViewItem = rootListViewItem.CreateChildItem() as SigActiveListViewItem;
-			listViewItem.mEntry = item;
-			listViewItem.Label = item.mSignal.mName;
-			listViewItem.AllowDragging = true;
+			for (var entry in entries)
+			{
+				var listViewItem = parentItem.CreateChildItem() as SigActiveListViewItem;
+				listViewItem.mEntry = entry;
+				SetupNewListViewItem(listViewItem);
 
-			var subListViewItem = (SigActiveListViewItem)listViewItem.CreateSubItem(1);
-			subListViewItem.AllowDragging = true;
-			
-			//var subListViewItem = listViewItem.CreateSubItem(1);
-			//subListViewItem.Label = item.mName;
+				if (mListViewStates.TryGet(entry, ?, var state))
+				{
+					listViewItem.Selected = state.mSelected;
+					listViewItem.Focused = state.mFocused;
+					
+					if (state.mIsOpen)
+						listViewItem.mOpenButton?.Open(true, true);
+				}
+
+				if (entry.mChildren != null)
+				{
+					hadParents = true;
+					Rebuild(listViewItem, entry.mChildren);
+				}
+			}
 		}
+
+		Rebuild((.)mListView.GetRoot(), mSigPanel.mEntries);
+
+		mListView.mLabelX = hadParents ? GS!(20) : GS!(6);
+		mListViewStates.Clear();
+	}
+
+	public void Clear()
+	{
+		mListView.GetRoot().Clear();
 	}
 
 	public void RebuildEntriesFromListView()
@@ -513,6 +681,11 @@ class SigActiveListPanel : Panel
 
 	void HandleDragUpdate(DragEvent evt)
 	{
+		if (var dragTarget = evt.mDragTarget as SigActiveListViewItem)
+		{
+			if (dragTarget.mOpenButton != null)
+				evt.mDragKind = .Inside;
+		}
 	}
 
 	void HandleDragEnd(DragEvent theEvent)
@@ -522,28 +695,104 @@ class SigActiveListPanel : Panel
 
 		if (theEvent.mDragTarget is SigActiveListViewItem)
 		{
-		    var source = (SigActiveListViewItem)theEvent.mSender;
 		    var target = (SigActiveListViewItem)theEvent.mDragTarget;
+			var mainSource = (SigActiveListViewItem)theEvent.mSender;
 
-		    if (source.mListView == target.mListView)
-		    {                    
-		        if (source == target)
-		            return;
-
-				// We're dragging a top-level item into a new position
-				source.mParentItem.RemoveChildItem(source, false);
-				if (theEvent.mDragKind == .Before) // Before
-				    target.mParentItem.InsertChild(source, target);
-				else if (theEvent.mDragKind == .After) // After
-				    target.mParentItem.AddChild(source, target);
-
-				RebuildEntriesFromListView();
-		    }
+			mainSource.mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+				{
+					var source = (SigActiveListViewItem)lvi;
+				    if (source.mListView == target.mListView)
+				    {
+				        if (source == target)
+				            return;
+		
+						// We're dragging a top-level item into a new position
+		
+						var sourceEntry = source.mEntry;
+						var targetEntry = target.mEntry;
+		
+						sourceEntry.ParentList.Remove(sourceEntry);
+						int targetIdx = targetEntry.ParentList.IndexOf(targetEntry);
+		
+						if (theEvent.mDragKind == .Before)
+						{
+							sourceEntry.mParent = targetEntry.mParent;
+						    targetEntry.ParentList.Insert(targetIdx, sourceEntry);
+						}
+						else if (theEvent.mDragKind == .After)
+						{
+							sourceEntry.mParent = targetEntry.mParent;
+						    targetEntry.ParentList.Insert(targetIdx + 1, sourceEntry);
+						}
+						else // Inside
+						{
+							sourceEntry.mParent = targetEntry;
+							targetEntry.mChildren.Add(sourceEntry);
+							target.mOpenButton.Open(true, false);
+						}
+		
+						gApp.mSigPanel.mEntryListViewDirty = true;
+				    }
+				});
 		}
 	}
 
 	public override void Draw(Graphics g)
 	{
 		g.DrawBox(DarkTheme.sDarkTheme.mImages[(int32)DarkTheme.ImageIdx.Window], 0, 0, mWidth, mHeight);
+	}
+
+	void HandleEditDone(EditWidget editWidget, bool cancelled)
+	{
+		var editingItem = mListView.mEditingItem as SigActiveListViewItem;
+
+		if (cancelled)
+		{
+			if (editingItem.mEntry.mAwaitingRename)
+			{
+				var entry = editingItem.mEntry;
+				entry.ParentList.Remove(entry);
+				delete entry;
+				gApp.mSigPanel.mEntryListViewDirty = true;
+				editingItem.mEntry = null;
+			}
+
+			return;
+		}
+
+		editingItem.mEntry.mAwaitingRename = false;
+		DeleteAndNullify!(editingItem.mEntry.mName);
+		editingItem.mEntry.mName = new .();
+		editWidget.GetText(editingItem.mEntry.mName);
+		if ((editingItem.mEntry.mName.IsEmpty) && (editingItem.mEntry.mSignal != null))
+			DeleteAndNullify!(editingItem.mEntry.mName);
+		gApp.mSigPanel.mEntryListViewDirty = true;
+		mListView.SetFocus();
+	}
+
+	public void DoRename()
+	{
+		mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+			{
+				if (mListView.mEditWidget == null)
+				{
+					var listViewItem = (SigActiveListViewItem)lvi;
+					mListView.EditListViewItem(listViewItem);
+				}
+			});
+	}
+
+	public void DoDelete()
+	{
+		mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+			{
+				var listViewItem = (SigActiveListViewItem)lvi;
+				var entry = listViewItem.mEntry;
+				entry.ParentList.Remove(entry);
+				gApp.DeferDelete(entry);
+			});
+
+		gApp.mSigPanel.Rebuild();
+		gApp.mSigPanel.mEntryListViewDirty = true;
 	}
 }

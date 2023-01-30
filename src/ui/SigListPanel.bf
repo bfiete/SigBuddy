@@ -23,6 +23,9 @@ class SigListViewItem : DarkListViewItem
 class SigListPanel : Panel
 {
 	public SigListView mListView;
+	public DarkEditWidget mEditWidget;
+	public bool mFilterChanged;
+	public SignalGroup mSignalGroup;
 
 	public this()
 	{
@@ -54,10 +57,69 @@ class SigListPanel : Panel
 
 		mListView.AddColumn(GS!(50), "Kind");
 		mListView.AddColumn(GS!(100), "Name");
+
+		mEditWidget = new DarkEditWidget();
+		mEditWidget.mOnKeyDown.Add(new => EditKeyDownHandler);
+		mEditWidget.mOnContentChanged.Add(new (evt) => { mFilterChanged = true; });
+		AddWidget(mEditWidget);
+	}
+
+	void EditKeyDownHandler(KeyDownEvent evt)
+	{
+		if ((evt.mKeyCode == .Down) || (evt.mKeyCode == .Up))
+		{
+			var root = mListView.GetRoot();
+			var focusedItem = root.FindFocusedItem();
+			if ((focusedItem == null) && (root.GetChildCount() > 0))
+			{
+				if (evt.mKeyCode == .Down)
+					root.GetChildAtIndex(0).Focused = true;
+				else
+					root.GetChildAtIndex(root.GetChildCount() - 1).Focused = true;
+				return;
+			}
+		}
+
+		switch (evt.mKeyCode)
+		{
+		case .Up,
+			 .Down,
+			 .PageUp,
+			 .PageDown:
+			mListView.KeyDown(evt.mKeyCode, false);
+		case .Return:
+			DoAddEntry();
+		default:
+		}
+
+		if (evt.mKeyFlags == .Ctrl)
+		{
+			switch (evt.mKeyCode)
+			{
+			case .Home,
+				 .End:
+				mListView.KeyDown(evt.mKeyCode, false);
+			default:
+			}
+		}
+	}
+
+	void DoAddEntry()
+	{
+		var sigPanel = gApp.mSigPanel;
+		var entry = sigPanel.CreateEntry();
+
+		mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+			{
+				var sigListViewItem = lvi as SigListViewItem;
+				entry.mSignal = sigListViewItem.mSignal;
+			});
 	}
 
 	void ListViewItemMouseDown(ListViewItem item, float x, float y, int32 btnNum, int32 clickCount)
 	{
+		mListView.SetFocus();
+
 		var sigListViewItem = item as SigListViewItem;
 
 		if (sigListViewItem.mColumnIdx != 0)
@@ -67,10 +129,7 @@ class SigListPanel : Panel
 
 		if ((btnNum == 0) && (clickCount == 2))
 		{
-			var entry = new SigPanel.Entry();
-			entry.mSignal = sigListViewItem.mSignal;
-			gApp.mSigPanel.mEntries.Add(entry);
-			gApp.mSigPanel.mSigActiveListPanel.RebuildListView();
+			DoAddEntry();
 		}
 
 		if (btnNum == 1)
@@ -132,12 +191,21 @@ class SigListPanel : Panel
 	public override void Resize(float x, float y, float width, float height)
 	{
 	    base.Resize(x, y, width, height);
-	    mListView.Resize(0, 0, mWidth, mHeight);
+	    mListView.Resize(0, 0, mWidth, mHeight - GS!(20));
+		mEditWidget.Resize(0, mHeight - GS!(20), mWidth, GS!(20));
 	}
 
 	public void RebuildData(SignalGroup sigGroup)
 	{
+		mSignalGroup = sigGroup;
+
 		var rootListViewItem = mListView.GetRoot();
+
+		String focusName = scope .();
+		var focusedItem = rootListViewItem.FindFocusedItem();
+		if (focusedItem != null)
+			focusName.Set(focusedItem.GetSubItem(1).Label);
+
 		rootListViewItem.Clear();
 
 		if (sigGroup.mSortDirty)
@@ -146,8 +214,17 @@ class SigListPanel : Panel
 			sigGroup.mSortDirty = false;
 		}
 
+		String filter = mEditWidget.GetText(.. scope .());
+		filter.Trim();
+		
 		for (var item in sigGroup.mSignals)
 		{
+			if (!filter.IsEmpty)
+			{
+				if (!item.mName.Contains(filter, true))
+					continue;
+			}
+
 			var listViewItem = rootListViewItem.CreateChildItem() as SigListViewItem;
 			listViewItem.mSignal = item;
 			if (item.mKind == .Reg)
@@ -165,11 +242,27 @@ class SigListPanel : Panel
 				label.Append(item.mDims);
 
 			subListViewItem.Label = label;
+
+			if ((!focusName.IsEmpty) && (label == focusName))
+				rootListViewItem.SelectItemExclusively(listViewItem);
 		}
 	}
 
 	public void Clear()
 	{
 		mListView.GetRoot().Clear();
+		mSignalGroup = null;
+	}
+
+	public override void Update()
+	{
+		base.Update();
+
+		if (mFilterChanged)
+		{
+			if (mSignalGroup != null)
+				RebuildData(mSignalGroup);
+			mFilterChanged = false;
+		}
 	}
 }

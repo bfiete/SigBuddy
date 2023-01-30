@@ -123,12 +123,6 @@ class SIGFormat : WaveFormat
 		mSigData.mRoot.mNestedGroups = new .();
 		mSigData.mRoot.mGroupMap = new .();
 
-		var topGroup = new SignalGroup();
-		topGroup.mGroup = mSigData.mRoot;
-		topGroup.mName.Set("TOP");
-		mSigData.mRoot.mNestedGroups.Add(topGroup);
-		mSigData.mRoot.mGroupMap[topGroup.mName] = topGroup;
-
 		uint32[4096] dataBuffer = ?;
 		bool isFirstTick = false;
 
@@ -226,11 +220,6 @@ class SIGFormat : WaveFormat
 		while (ptr < endPtr)
 		{
 			SigCmd cmd = Read<SigCmd>();
-			if (cmd != .DeclareSignal)
-			{
-				NOP!();
-			}
-
 			switch (cmd)
 			{
 			case .DeclareSignal:
@@ -259,7 +248,7 @@ class SIGFormat : WaveFormat
 					signalDataMap[sigCode].AddRef();
 				signal.mSignalData = signalDataMap[sigCode];
 
-				SignalGroup group = topGroup;
+				SignalGroup group = mSigData.mRoot;
 				for (var namePart in sigName.Split(' '))
 				{
 					if (@namePart.HasMore)

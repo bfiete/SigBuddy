@@ -1241,8 +1241,11 @@ public class Signal
 
 	public void GetFullName(String outName)
 	{
-		mGroup.GetFullName(outName);
-		outName.Append('/');
+		if ((mGroup != null) && (mGroup.mGroup != null))
+		{
+			mGroup.GetFullName(outName);
+			outName.Append('.');
+		}
 		outName.Append(mName);
 	}
 
@@ -1267,7 +1270,7 @@ public class SignalGroup
 		if ((mGroup != null) && (mGroup.mGroup != null))
 		{
 			mGroup.GetFullName(outName);
-			outName.Append('/');
+			outName.Append('.');
 		}
 		outName.Append(mName);
 	}
@@ -1311,7 +1314,7 @@ class SigData
 	public Signal GetSignal(String signalPath)
 	{
 		SignalGroup curGroup = mRoot;
-		for (var name in signalPath.Split('/'))
+		for (var name in signalPath.Split('.'))
 		{
 			if (@name.HasMore)
 			{

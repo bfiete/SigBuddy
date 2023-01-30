@@ -386,6 +386,11 @@ class SBApp : BFApp
 			{
 				gApp.mSigPanel.mSigViewPanel.FindNext();
 			});
+		subItem = editMenu.AddMenuItem("Find &Prev", "Shift-F3");
+		subItem.mOnMenuItemSelected.Add(new (menu) =>
+			{
+				gApp.mSigPanel.mSigViewPanel.FindPrev();
+			});
 
 		var bookmarkItem = editMenu.AddMenuItem("Bookmar&ks");
 		subItem = bookmarkItem.AddMenuItem("&Toggle Bookmark", "Ctrl+F2");
@@ -476,6 +481,7 @@ class SBApp : BFApp
 	void ClearWorkspaceData()
 	{
 		mSigPanel.mEntries.ClearAndDeleteItems();
+		mSigPanel.mSigActiveListPanel.Clear();
 		mSigPanel.mSigActiveListPanel.RebuildListView();
 
 		var sigViewPanel = mSigPanel.mSigViewPanel;
@@ -530,28 +536,45 @@ class SBApp : BFApp
 		float vertPos = 0;
 		sd.Get("VertPos", ref vertPos);
 
+		String lastFindEntry = sd.Get("LastFindEntry", .. scope .());
+		if (!lastFindEntry.IsEmpty)
+		{
+			delete sigViewPanel.mLastFindData;
+			sigViewPanel.mLastFindData = new .();
+			for (sd.Enumerate("LastFindData"))
+			{
+				sigViewPanel.mLastFindData.Add((.)sd.GetCurInt());
+			}
+		}
+
 		sigViewPanel.Clamp();
 
-		SigPanel.Entry focusedEntry = null;
-
-		for (var entry in sd.Enumerate("Entries"))
+		void LoadEntries(SigPanel.Entry parentEntry, List<SigPanel.Entry> entries)
 		{
-			SigPanel.Entry entry = null;
-
-			var signalName = sd.GetString("Name", .. scope .());
-			if (!String.IsNullOrEmpty(signalName))
+			for (var entry in sd.Enumerate("Entries"))
 			{
-				var signal = mSigData.GetSignal(signalName);
-				if (signal != null)
+				SigPanel.Entry entry = null;
+				Signal signal = null;
+
+				var signalName = sd.GetString("Signal", .. scope .());
+				if (!String.IsNullOrEmpty(signalName))
 				{
-					entry = new SigPanel.Entry();
-					entry.mSignal = signal;
-					mSigPanel.mEntries.Add(entry);
-				}	
-			}
+					signal = mSigData.GetSignal(signalName);
+					if (signal == null)
+						continue; // Remove dead signals
+				}
 
-			if (entry != null)
-			{
+				SigActiveListPanel.ListViewState state = default;
+
+				entry = new SigPanel.Entry();
+				entry.mParent = parentEntry;
+				entry.mSignal = signal;
+				entries.Add(entry);
+
+				var name = sd.GetString("Name", .. scope .());
+				if ((!name.IsEmpty) || (entry.mSignal == null))
+					entry.mName = new String(name);
+
 				uint32 color = (.)sd.GetInt("Color");
 				if (color != 0)
 					entry.mColor = color;
@@ -559,9 +582,29 @@ class SBApp : BFApp
 				entry.mDataFormat = sd.GetEnum<SigUtils.DataFormat>("Format");
 
 				if (sd.Contains("Focused"))
-					focusedEntry = entry;
+					state.mFocused = true;
+				if (sd.Contains("Selected"))
+					state.mSelected = true;
+
+				if (sd.Contains("IsOpen"))
+				{
+					entry.mChildren = new .();
+					sd.Get("IsOpen", ref state.mIsOpen);
+				}
+
+				if (sd.Contains("Entries"))
+				{
+					LoadEntries(entry, entry.mChildren);
+				}
+
+				if ((!lastFindEntry.IsEmpty) && (signalName == lastFindEntry))
+					sigViewPanel.mLastFindEntry = entry;
+
+				mSigPanel.mSigActiveListPanel.mListViewStates[entry] = state;
 			}
 		}
+
+		LoadEntries(null, mSigPanel.mEntries);
 
 		mSigPanel.Rebuild();
 		mSigPanel.mSigActiveListPanel.RebuildListView();
@@ -569,7 +612,7 @@ class SBApp : BFApp
 		sigViewPanel.UpdateScrollbar();
 		//sigViewPanel.mVertScrollbar.ScrollTo(vertPos);
 
-		if (focusedEntry != null)
+		/*if (focusedEntry != null)
 		{
 			mSigPanel.mSigActiveListPanel.mListView.GetRoot().WithItems(scope (item) =>
 				{
@@ -578,7 +621,7 @@ class SBApp : BFApp
 					if (entry == focusedEntry)
 						activeItem.Focused = true;
 				});
-		}
+		}*/
 
 		return .Ok;
 	}
@@ -619,24 +662,55 @@ class SBApp : BFApp
 		sd.Add("Scale", sigViewPanel.mScale);
 		sd.Add("VertPos", sigViewPanel.mVertScrollbar.mContentPos);
 
-		using (sd.CreateArray("Entries"))
+		if ((sigViewPanel.mLastFindEntry != null) && (sigViewPanel.mLastFindEntry.mSignal != null))
 		{
-			mSigPanel.mSigActiveListPanel.mListView.GetRoot().WithItems(scope [&] (item) =>
+			sd.Add("LastFindEntry", sigViewPanel.mLastFindEntry.mSignal.GetFullName(.. scope .()));
+			using (sd.CreateArray("LastFindData"))
+			{
+				for (var val in sigViewPanel.mLastFindData)
+					sd.Add(val);
+			}
+		}
+
+		if (gApp.mSigPanel.mEntryListViewDirty)
+			gApp.mSigPanel.Update();
+
+		void SaveEntries(SigActiveListViewItem listViewItem)
+		{
+			using (sd.CreateArray("Entries"))
+			{
+				for (var item in listViewItem.mChildItems)
 				{
 					var activeItem = (SigActiveListViewItem)item;
 					var entry = activeItem.mEntry;
 
 					using (sd.CreateObject())
 					{
-						var signalName = entry.mSignal.GetFullName(.. scope .());
-						sd.Add("Name", signalName);
+						if (entry.mName != null)
+							sd.Add("Name", entry.mName);
+						if (entry.mSignal != null)
+						{
+							var signalName = entry.mSignal.GetFullName(.. scope .());
+							sd.Add("Signal", signalName);
+						}
 						sd.ConditionalAdd("Format", entry.mDataFormat);
 						sd.ConditionalAdd("Color", entry.mColor, 0xFF00FF00);
 						if (activeItem.Focused)
 							sd.Add("Focused", true);
+						else if (activeItem.Selected)
+							sd.Add("Selected", true);
+
+						if (activeItem.mChildItems != null)
+						{
+							sd.Add("IsOpen", activeItem.mOpenButton.mIsOpen);
+							SaveEntries(activeItem);
+						}
 					}
-				});
+				}
+			}
 		}
+
+		SaveEntries((.)mSigPanel.mSigActiveListPanel.mListView.GetRoot());
 
 		return .Ok;
 	}
@@ -679,6 +753,13 @@ class SBApp : BFApp
 	{
 		GotoDialog gotoDialog = new .();
 		gotoDialog.PopupWindow(mMainWindow);
+	}
+
+	public override void Update(bool batchStart)
+	{
+		base.Update(batchStart);
+		if (ThemeFactory.mDefault != null)
+			ThemeFactory.mDefault.Update();
 	}
 }
 
