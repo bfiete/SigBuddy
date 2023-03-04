@@ -29,6 +29,9 @@ class SigActiveListView : SBListView
 	{
 		var sigViewPanel = gApp.mSigPanel.mSigViewPanel;
 		sigViewPanel.KeyDown(keyCode, isRepeat);
+
+		if ((keyCode == .Left) || (keyCode == .Right) || (keyCode == .Home) || (keyCode == .End))
+			return;
 		base.KeyDown(keyCode, isRepeat);
 	}
 }
@@ -502,6 +505,26 @@ class SigActiveListPanel : Panel
 					DoRename();
 				});
 
+			subMenu = menu.AddItem("Copy Value");
+			subMenu.mOnMenuItemSelected.Add(new (menu) =>
+				{
+					String values = scope .();
+					mListView.GetRoot().WithSelectedItems(scope (lvi) =>
+						{
+							var listViewItem = (SigActiveListViewItem)lvi;
+							var entry = listViewItem.mEntry;
+							if (entry == null)
+								return;
+
+							var subItem = listViewItem.GetSubItem(1);
+							if (!values.IsEmpty)
+								values.Append(", ");
+
+							Font.StrRemoveColors(subItem.Label, values);
+						});
+					gApp.SetClipboardText(values);
+				});
+
 			menu.AddItem();
 		}
 
@@ -547,8 +570,9 @@ class SigActiveListPanel : Panel
 	void ListViewItemClicked(ListViewItem item, float x, float y, int32 btnNum)
 	{
 		var item;
-		if (item.mColumnIdx != 0)
-		    item = item.GetSubItem(0);
+		var rootItem = item;
+		if (rootItem.mColumnIdx != 0)
+		    rootItem = item.GetSubItem(0);
 
 		//mListView.GetRoot().SelectItemExclusively(item);
 
@@ -681,11 +705,7 @@ class SigActiveListPanel : Panel
 
 	void HandleDragUpdate(DragEvent evt)
 	{
-		if (var dragTarget = evt.mDragTarget as SigActiveListViewItem)
-		{
-			if (dragTarget.mOpenButton != null)
-				evt.mDragKind = .Inside;
-		}
+		
 	}
 
 	void HandleDragEnd(DragEvent theEvent)

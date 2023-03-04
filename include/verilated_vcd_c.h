@@ -69,6 +69,7 @@ enum SigFlags
 #include <map>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 class VerilatedVcd;
 class VerilatedVcdCallInfo;
@@ -215,6 +216,9 @@ private:
     typedef std::vector<VerilatedVcdCallInfo*>  CallbackVec;
     CallbackVec         m_callbacks;    ///< Routines to perform dumping
 
+    typedef std::unordered_map<std::string, uint32_t> NameToCodeMap;
+    NameToCodeMap       mNameToCodeMap;
+
     VerilatedAssertOneThread m_assertOne;  ///< Assert only called from single thread
 
     void closePrev();
@@ -289,6 +293,8 @@ public:
 
     void declString(vluint32_t code, const char* name, int numBits);
     void setString(vluint32_t code, int idx, const char* str);
+
+    uint32_t FindCode(const std::string& name);
 
     //  ... other module_start for submodules (based on cell name)
 

@@ -339,6 +339,8 @@ void VerilatedVcd::declare(vluint32_t code, const char* name, const char* wirep,
 	if (array)
 		m_filep->write32(arraynum);
 
+	mNameToCodeMap[name] = code;
+
 	bufferCheck();
 }
 
@@ -390,6 +392,14 @@ void VerilatedVcd::setString(vluint32_t code, int idx, const char* str)
 	m_filep->write8(SigCmd_CodeSetString);
 	m_filep->write32(idx);
 	m_filep->writeSized(str, strlen(str));
+}
+
+uint32_t VerilatedVcd::FindCode(const std::string& name)
+{
+	auto itr = mNameToCodeMap.find(name);
+	if (itr == mNameToCodeMap.end())
+		return 0;
+	return itr->second;
 }
 
 //=============================================================================

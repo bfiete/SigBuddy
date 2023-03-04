@@ -318,19 +318,20 @@ class SigViewPanel : Panel
 
 				bool useAngled = signalData.mNumBits > 1;
 
+				uint32 useColor = color;
 				if (hasUndefined)
 				{
 					if (entry.mColorUndef == 0)
 					{
-						Color.ToHSV(color, var h, var s, var v);
+						Color.ToHSV(useColor, var h, var s, var v);
 						s *= 0.2f;
 						v *= 0.5f;
 						entry.mColorUndef = Color.FromHSV(h, s, v, 255);
 					}
-					color = entry.mColorUndef;
+					useColor = entry.mColorUndef;
 				}
 
-				using (g.PushColor(color))
+				using (g.PushColor(useColor))
 				{
 					if (isNonZero)
 					{
